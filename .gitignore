@@ -3,3 +3,7 @@ storage/
 node_modules/
 .DS_Store
 .scratch/
+# mimic 构建产物与签名密钥库：绝不可提交（keystore 泄露 = 他人可冒名发布更新）
+.mimic-build/
+*.keystore
+*.jks
