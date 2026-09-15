@@ -13,6 +13,8 @@
 #   6. 安装 sharp WebAssembly 回退（android-arm64 无原生预编译）
 #   7. 重建 /usr/bin/dsh 包装脚本（--expose-internals，HMR 必需）
 #   8. 写入启动/停止脚本 + 权限模式配置
+#   9. 前端移动端适配（CSS/JS 注入、viewport、manifest standalone）
+#  10. JS 性能补丁（/assets/ 内容哈希产物 immutable 缓存头）
 #
 # 用法：
 #   bash setup.sh
@@ -31,8 +33,8 @@ DSH_NPM="@deepseek-ai/dsh"
 DSH_DIR="/data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh"
 INSTALL_DIR="$HOME/dsh"
 
-# ---------------------------------------------------------------- 1/8 依赖
-info "1/8 安装构建依赖 (cmake clang make binutils pkg-config python nodejs)"
+# ---------------------------------------------------------------- 1/10 依赖
+info "1/10 安装构建依赖 (cmake clang make binutils pkg-config python nodejs)"
 pkg update -y >/dev/null 2>&1 || true
 pkg install -y cmake clang make binutils pkg-config python nodejs
 
@@ -58,8 +60,8 @@ if is_slow "https://nodejs.org/dist/"; then
   export npm_config_disturl="https://npmmirror.com/mirrors/node/"
 fi
 
-# ------------------------------------------------------- 2/8 准备 gyp 补丁
-info "2/8 下载 Node headers 填充 node-gyp 缓存（约 1 分钟，请稍候）"
+# ------------------------------------------------------- 2/10 准备 gyp 补丁
+info "2/10 下载 Node headers 填充 node-gyp 缓存（约 1 分钟，请稍候）"
 # node-gyp 首次构建会把 node headers 解压到缓存，其中 common.gypi 引用了
 # android_ndk_path 变量；Termux 无 NDK 该变量未定义 → 必须修补缓存文件。
 # 这里用 `node-gyp install` 只下载 headers（远快于整树 npm install），随后打补丁。
@@ -82,8 +84,8 @@ else
   warn "未找到 $GYP_GIPI，请确认 node 已安装；可先手动跑一次 `npm i -g @deepseek-ai/dsh` 填充缓存"
 fi
 
-# ------------------------------------------------------------- 3/8 正式安装
-info "3/8 用 android30 编译目标正式安装 dsh（下载依赖+原生编译，可能需要 5~15 分钟，请耐心等待，不要中断）"
+# ------------------------------------------------------------- 3/10 正式安装
+info "3/10 用 android30 编译目标正式安装 dsh（下载依赖+原生编译，可能需要 5~15 分钟，请耐心等待，不要中断）"
 # 处理 koffi 编译的 <spawn.h> 问题（Issue #4）：-target aarch64-linux-android30 会让 clang
 # 改用 Android NDK sysroot 头文件路径，可能找不到 Termux 的 /usr/include 里的 spawn.h。
 # 修复：显式加入 $PREFIX/include（含权限可读的 include 路径）；若 spawn.h 缺失则写入
@@ -127,12 +129,19 @@ SPAWN_SHIM
 fi
 CFLAGS="$EXTRA_FLAGS" CXXFLAGS="$EXTRA_FLAGS" \
   npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs "$DSH_NPM"
-"$DSH_DIR/node_modules/node-pty/build/Release/pty.node" 2>/dev/null || true
-test -f "$DSH_DIR/node_modules/node-pty/build/Release/pty.node" && ok "node-pty 编译产物就位"
-test -f "$DSH_DIR/node_modules/koffi/build/koffi/android_arm64/koffi.node" && ok "koffi 编译产物就位"
+# 加载自检：执行 .node 文件本身会触发 Illegal instruction（它是共享库，不是可执行文件），
+# 必须用 require 真正加载 node-pty 包，才能判断产物是否可用。
+if node -e 'require(process.argv[1])' "$DSH_DIR/node_modules/node-pty" >/dev/null 2>&1; then
+  ok "node-pty 编译产物就位（加载自检通过）"
+elif [ -f "$DSH_DIR/node_modules/node-pty/build/Release/pty.node" ]; then
+  warn "  node-pty 产物存在但加载自检失败（PTY / 持久终端可能不可用）"
+else
+  warn "  未找到 node-pty 编译产物（PTY / 持久终端将不可用）"
+fi
+test -f "$DSH_DIR/node_modules/koffi/build/koffi/android_arm64/koffi.node" && ok "koffi 编译产物就位" || warn "  未找到 koffi 编译产物（部分原生功能将不可用）"
 
-# ------------------------------------------------------- 4/8 后端兼容补丁
-info "4/8 后端兼容补丁"
+# ------------------------------------------------------- 4/10 后端兼容补丁
+info "4/10 后端兼容补丁"
 
 # 4a: 会话持久化 link→rename（Android 禁 hardlink）
 SJ="$DSH_DIR/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
@@ -200,58 +209,54 @@ PY
 fi
 
 # 4d: 作曲栏 普通回车=换行（不发送），Ctrl/Cmd+Enter=发送
-# 安卓输入法/键盘的回车会误触发发送，改为在 React 处理里对非加速回车
-# 提前 return（textarea 默认行为=换行）。对应 apply-frontend.sh 注入的
-# enterkeyhint=newline（让输入法回车键显示"换行"）。
+# 安卓输入法/键盘的回车会误触发发送，改为在 composer keymap 的 Enter 命令里
+# 对非加速回车返回 false，交还编辑器默认行为（=换行）。对应 apply-frontend.sh
+# 注入的 enterkeyhint=newline（让输入法回车键显示"换行"）。
+# 用正则容忍缩进/周边改动，避免上游微调后静默失配（0.1.5-rc.1 / rc.2 已验证）。
 CB="$DSH_DIR/node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js"
 if grep -q "dsh-android: 普通回车换行" "$CB" 2>/dev/null; then
   ok "  client-ui-conversation 回车补丁已就位"
 else
   python3 - "$CB" <<'PY'
-import sys
+import re, sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = (
-  '\t\t\t\tif (keyboard.arbitrate("enter", composing) !== "pass") {\n'
-  '\t\t\t\t\te.preventDefault();\n'
-  '\t\t\t\t\treturn;\n'
-  '\t\t\t\t}\n'
-  '\t\t\t\te.preventDefault();\n'
-  '\t\t\t\tif (e.repeat) return;\n'
-  '\t\t\t\tif (locked || machineBusy) return;\n'
-  '\t\t\t\tconst accelerated = e.ctrlKey || e.metaKey;\n'
-  '\t\t\t\tif (accelerated && canSteerQueue) {\n'
-  '\t\t\t\t\tkeyboard.steerQueue();\n'
-  '\t\t\t\t\treturn;\n'
-  '\t\t\t\t}\n'
-  '\t\t\t\tkeyboard.submit(resolveSubmitMode(running, accelerated ? "accelerated" : "enter", subagent === null));\n'
+# 定位 composer keymap 的 Enter 命令：先 arbitrate，再无条件 preventDefault + submit。
+pattern = re.compile(
+  r'(?P<i>[ \t]*)if \(handlers\.arbitrate\("enter", false\) !== "pass"\) \{\n'
+  r'(?P=i)[ \t]*event\?\.preventDefault\(\);\n'
+  r'(?P=i)[ \t]*return true;\n'
+  r'(?P=i)\}\n'
+  r'(?P=i)event\?\.preventDefault\(\);\n'
+  r'(?P=i)if \(event\?\.repeat === true\) return true;\n'
+  r'(?P=i)if \(!handlers\.canSubmit\(\)\) return true;\n'
+  r'(?P=i)handlers\.submit\(event\?\.ctrlKey === true \|\| event\?\.metaKey === true\);\n'
 )
-new = (
-  '\t\t\t\tif (keyboard.arbitrate("enter", composing) !== "pass") {\n'
-  '\t\t\t\t\te.preventDefault();\n'
-  '\t\t\t\t\treturn;\n'
-  '\t\t\t\t}\n'
-  '\t\t\t\tconst accelerated = e.ctrlKey || e.metaKey;\n'
-  '\t\t\t\tif (!accelerated) return; /* dsh-android: 普通回车换行，Ctrl/Cmd+Enter 发送 */\n'
-  '\t\t\t\te.preventDefault();\n'
-  '\t\t\t\tif (e.repeat) return;\n'
-  '\t\t\t\tif (locked || machineBusy) return;\n'
-  '\t\t\t\tif (accelerated && canSteerQueue) {\n'
-  '\t\t\t\t\tkeyboard.steerQueue();\n'
-  '\t\t\t\t\treturn;\n'
-  '\t\t\t\t}\n'
-  '\t\t\t\tkeyboard.submit(resolveSubmitMode(running, "accelerated", subagent === null));\n'
-)
-if s.count(old) != 1:
-  print("  WARN: 回车补丁模式未精确匹配，跳过（请人工检查）")
+def repl(m):
+  i = m.group('i')
+  return (
+    f'{i}if (handlers.arbitrate("enter", false) !== "pass") {{\n'
+    f'{i}\tevent?.preventDefault();\n'
+    f'{i}\treturn true;\n'
+    f'{i}}}\n'
+    f'{i}/* dsh-android: 普通回车换行，Ctrl/Cmd+Enter 发送 */\n'
+    f'{i}if (event != null && event.ctrlKey !== true && event.metaKey !== true) return false;\n'
+    f'{i}event?.preventDefault();\n'
+    f'{i}if (event?.repeat === true) return true;\n'
+    f'{i}if (!handlers.canSubmit()) return true;\n'
+    f'{i}handlers.submit(event?.ctrlKey === true || event?.metaKey === true);\n'
+  )
+s, n = pattern.subn(repl, s)
+if n != 1:
+  print(f"  WARN: 回车补丁模式未匹配（命中 {n} 处），跳过；dsh 版本可能已变化，请人工检查")
   sys.exit(0)
-open(p, 'w', encoding='utf-8').write(s.replace(old, new))
-print("  patched client-ui-conversation (Enter=newline, Ctrl+Enter=send)")
+open(p, 'w', encoding='utf-8').write(s)
+print("  patched client-ui-conversation (Enter=换行, Ctrl/Cmd+Enter=发送)")
 PY
 fi
 
-# ------------------------------------------------------ 5/8 sharp wasm 回退
-info "5/8 安装 sharp WebAssembly 回退（android-arm64 无原生预编译）"
+# ------------------------------------------------------ 5/10 sharp wasm 回退
+info "5/10 安装 sharp WebAssembly 回退（android-arm64 无原生预编译）"
 SHARP_VER="$(node -e "console.log(require('$DSH_DIR/node_modules/sharp/package.json').version)" 2>/dev/null || echo 0.35.3)"
 if [ -d "$DSH_DIR/node_modules/@img/sharp-wasm32" ]; then
   ok "  sharp-wasm32 已就位 (v${SHARP_VER})"
@@ -268,8 +273,8 @@ else
   ok "  sharp-wasm32@${SHARP_VER} 已安装"
 fi
 
-# ------------------------------------------------------ 6/8 dsh 包装脚本
-info "6/8 重建 /usr/bin/dsh 包装脚本（--expose-internals，HMR 必需）"
+# ------------------------------------------------------ 6/10 dsh 包装脚本
+info "6/10 重建 /usr/bin/dsh 包装脚本（--expose-internals，HMR 必需）"
 rm -f /data/data/com.termux/files/usr/bin/dsh
 cat > /data/data/com.termux/files/usr/bin/dsh <<'EOF'
 #!/data/data/com.termux/files/usr/bin/sh
@@ -278,12 +283,17 @@ EOF
 chmod +x /data/data/com.termux/files/usr/bin/dsh
 dsh --version && ok "dsh $(dsh --version) 可用"
 
-# ----------------------------------------------------- 7/8 启动/停止脚本
-info "7/8 写入启动/停止脚本到 $INSTALL_DIR"
+# ----------------------------------------------------- 7/10 启动/停止脚本
+info "7/10 写入启动/停止脚本到 $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/storage"
 cp "$SCRIPT_DIR/start_dsh.sh" "$INSTALL_DIR/start_dsh.sh"
 cp "$SCRIPT_DIR/stop_dsh.sh"  "$INSTALL_DIR/stop_dsh.sh"
 chmod +x "$INSTALL_DIR/start_dsh.sh" "$INSTALL_DIR/stop_dsh.sh"
+# restart_dsh_now.sh 供补丁后重启用；它的输出里会打印带 token 的 Web UI URL。
+if [ -f "$SCRIPT_DIR/restart_dsh_now.sh" ]; then
+  cp "$SCRIPT_DIR/restart_dsh_now.sh" "$INSTALL_DIR/restart_dsh_now.sh"
+  chmod +x "$INSTALL_DIR/restart_dsh_now.sh"
+fi
 
 # 权限模式：Android 上 bwrap/landlock 命名空间沙箱不可用，bash 工具需
 # danger-full-access 才能执行。写入 profile 配置层 + 启动脚本环境变量双保险。
@@ -299,16 +309,17 @@ YAML
   ok "  权限模式已写入 $PROFILE_PATCH"
 fi
 
-# ------------------------------------------------------- 8/8 前端适配(可选)
+# ------------------------------------------------------- 8/10 前端适配(可选)
+# 8/9 步是可选增强：失败只告警，不能让整轮安装中止（否则连完成横幅都看不到）。
 if [ -f "$SCRIPT_DIR/apply-frontend.sh" ]; then
-  info "8/8 应用前端移动端适配"
-  bash "$SCRIPT_DIR/apply-frontend.sh"
+  info "8/10 应用前端移动端适配"
+  bash "$SCRIPT_DIR/apply-frontend.sh" || warn "前端适配失败（可稍后手动重跑 apply-frontend.sh）"
 fi
 
-# -------------------------------------------------- 9/9 JS 性能补丁(可选)
+# -------------------------------------------------- 9/10 JS 性能补丁(可选)
 if [ -f "$SCRIPT_DIR/apply-js-patches.sh" ]; then
-  info "9/9 应用 JS 性能补丁（历史窗口瘦身 / 重连增量同步 / 静态缓存）"
-  bash "$SCRIPT_DIR/apply-js-patches.sh"
+  info "9/10 应用 JS 性能补丁（静态资源 immutable 缓存）"
+  bash "$SCRIPT_DIR/apply-js-patches.sh" || warn "JS 性能补丁未全部应用（不影响基本使用，详见 apply-js-patches.sh 输出）"
 fi
 
 # ---------------------------------------------------------------- 10/10 完成

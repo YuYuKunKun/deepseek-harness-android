@@ -20,6 +20,14 @@ echo "$(date '+%F %T') restarted pid=$NEWPID" >> "$LOG"
 for i in $(seq 1 90); do
   if curl -s -o /dev/null --max-time 2 http://127.0.0.1:3080; then
     echo "$(date '+%F %T') ready on 3080" >> "$LOG"
+    # Web UI 有浏览器认证：首次访问必须带本进程的启动 token 才能换取签名 cookie。
+    # 本脚本不打开浏览器，所以把带 token 的 URL 打出来（Termux 里可直接点按）。
+    AUTH_URL="$(sed -n 's/^dsh web: \(http[^ ]*\).*/\1/p' "$LOG" | tail -1)"
+    if [ -n "$AUTH_URL" ]; then
+      echo "$AUTH_URL"
+    else
+      echo "[!] 已就绪，但日志中还没出现带 token 的 URL；稍后可从 $LOG 取，或直接跑 start_dsh.sh"
+    fi
     exit 0
   fi
   sleep 1
