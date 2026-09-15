@@ -47,6 +47,16 @@ bash ~/dsh/stop_dsh.sh    # 停止
 
 打开 <http://127.0.0.1:3080>，在 **Models** 页填入你的 **DeepSeek API Key**（存于 `~/.dsh/.credentials.yaml`，0600 权限），即可开始。
 
+**升级 / 指定 dsh 版本**：不要在 Termux 里直接 `npm install -g @deepseek-ai/dsh@x.y.z` —— 那会丢掉 `--allow-scripts`、koffi 的 `-target aarch64-linux-android30` 和 spawn.h shim，`node-pty` / `koffi` 原生模块会缺失。必须重跑 `setup.sh`，用 `DSH_NPM` 指定版本：
+
+```bash
+cd ~/deepseek-harness-android
+DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh
+bash ~/dsh/restart_dsh_now.sh      # 重启，并打印带 token 的 Web UI URL
+```
+
+不带 `DSH_NPM` 时安装 npm `latest`；也可以按标签装，例如 `DSH_NPM='@deepseek-ai/dsh@next'`。升级后留意 `setup.sh` 输出里的 `WARN` 行——上游改动会让某个补丁的匹配模式失效，脚本现在会如实报告而不是假装成功。
+
 ### 四、setup.sh 自动修复的 Android 兼容问题
 
 | 问题 | 现象 | 修复 |
@@ -135,6 +145,16 @@ bash ~/dsh/stop_dsh.sh    # stop
 ```
 
 Open <http://127.0.0.1:3080>, enter your **DeepSeek API Key** in the **Models** page (stored at `~/.dsh/.credentials.yaml`, mode 0600), and start chatting.
+
+**Upgrading / pinning a dsh version**: do **not** run `npm install -g @deepseek-ai/dsh@x.y.z` directly in Termux — that drops `--allow-scripts`, koffi's `-target aarch64-linux-android30`, and the spawn.h shim, leaving `node-pty` / `koffi` without native binaries. Re-run `setup.sh` and pick the version with `DSH_NPM`:
+
+```bash
+cd ~/deepseek-harness-android
+DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh
+bash ~/dsh/restart_dsh_now.sh      # restart, then prints the tokenized Web UI URL
+```
+
+Without `DSH_NPM` the npm `latest` tag is installed; a tag also works, e.g. `DSH_NPM='@deepseek-ai/dsh@next'`. After an upgrade, watch the `WARN` lines in `setup.sh` output — upstream changes can invalidate a patch's match pattern, and the script now reports that honestly instead of printing a false success.
 
 ### 4. Android issues auto-fixed by setup.sh
 

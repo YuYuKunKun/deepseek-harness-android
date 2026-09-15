@@ -29,7 +29,9 @@ warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 ok()    { printf '\033[1;32m[v]\033[0m %s\n' "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # 脚本真实目录（脚本中段会 cd，须用绝对路径）
-DSH_NPM="@deepseek-ai/dsh"
+# 安装哪个 dsh：默认 npm latest；用环境变量可指定版本/标签，例如
+#   DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh
+DSH_NPM="${DSH_NPM:-@deepseek-ai/dsh}"
 DSH_DIR="/data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh"
 INSTALL_DIR="$HOME/dsh"
 
@@ -85,7 +87,7 @@ else
 fi
 
 # ------------------------------------------------------------- 3/10 正式安装
-info "3/10 用 android30 编译目标正式安装 dsh（下载依赖+原生编译，可能需要 5~15 分钟，请耐心等待，不要中断）"
+info "3/10 用 android30 编译目标安装 ${DSH_NPM}（下载依赖+原生编译，可能需要 5~15 分钟，请耐心等待，不要中断）"
 # 处理 koffi 编译的 <spawn.h> 问题（Issue #4）：-target aarch64-linux-android30 会让 clang
 # 改用 Android NDK sysroot 头文件路径，可能找不到 Termux 的 /usr/include 里的 spawn.h。
 # 修复：显式加入 $PREFIX/include（含权限可读的 include 路径）；若 spawn.h 缺失则写入
@@ -149,13 +151,22 @@ if grep -q "rename(tmp, finalPath)" "$SJ" 2>/dev/null; then
   ok "  session-persistence 已修补"
 else
   python3 - "$SJ" <<'PY'
-import sys, re
+import re, sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-s = s.replace('import { link, mkdir,', 'import { mkdir,')
-s = s.replace('realpath, rm,', 'realpath, rename, rm,')
-s = s.replace('await link(tmp, finalPath);', 'await rename(tmp, finalPath);')
-open(p, 'w', encoding='utf-8').write(s)
+old = 'await link(tmp, finalPath);'
+if s.count(old) != 1:
+    print(f"  WARN: 会话发布模式未精确匹配（命中 {s.count(old)} 处），跳过；请人工检查 {p}")
+    sys.exit(0)
+out = s.replace(old, 'await rename(tmp, finalPath);')
+out = out.replace('import { link, mkdir,', 'import { mkdir,')
+out = out.replace('realpath, rm,', 'realpath, rename, rm,')
+# 写坏代码比不修更糟：确认 rename 确实已从 node:fs/promises 导入
+m = re.search(r'^import \{([^}]*)\} from "node:fs/promises";$', out, re.M)
+if m is None or 'rename' not in [n.strip() for n in m.group(1).split(',')]:
+    print(f"  WARN: 未能确认 rename 已导入，跳过以免写入坏代码；请人工检查 {p}")
+    sys.exit(0)
+open(p, 'w', encoding='utf-8').write(out)
 print("  patched session-persistence-jsonl (link→rename)")
 PY
 fi
@@ -169,9 +180,16 @@ else
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
+old = 'await link(temporary, target);'
+if s.count(old) != 1:
+    print(f"  WARN: 未找到旧形态 link(temporary, target)（命中 {s.count(old)} 处）。")
+    print("        0.1.5-rc.x 的附件发布改成了 link(source, target) / link(staged.path, target)，")
+    print("        本项目尚无对应回退 —— 被禁 hardlink 的 ROM 上附件保存可能失败（已知问题，")
+    print("        见 README「已知问题」行与 patches/obsolete/README.md）。")
+    sys.exit(0)
+s = s.replace(old, 'await rename(temporary, target);')
 s = s.replace('import { chmod, link, mkdir,', 'import { chmod, mkdir,')
 s = s.replace('readFile, unlink }', 'readFile, rename, unlink }')
-s = s.replace('await link(temporary, target);', 'await rename(temporary, target);')
 open(p, 'w', encoding='utf-8').write(s)
 print("  patched attachment-local (link→rename)")
 PY
@@ -192,20 +210,32 @@ else
 fi
 
 # 4c: subprocess 终端检测 android 视同 linux
-SP="$DSH_DIR/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js"
-if grep -q 'platform === "android"' "$SP" 2>/dev/null; then
+# 0.1.5-rc.1 该判断在 lib/index.js；rc.2 起被拆进哈希命名的 chunk
+# （lib/runner-launch-*.js），文件名随构建变化——所以按内容在整个 lib/ 下搜，
+# 不写死文件名，找不到时明确告警而不是假装成功。
+SP_DIR="$DSH_DIR/node_modules/@deepseek-ai/dsh-subprocess-local/lib"
+SP_PAT='if (platform === "linux") return new LinuxProcessInspector(arch, internals);'
+if grep -rq 'platform === "android"' "$SP_DIR" 2>/dev/null; then
   ok "  subprocess-local 已修补"
 else
-  python3 - "$SP" <<'PY'
+  SP="$(grep -rlF "$SP_PAT" "$SP_DIR" 2>/dev/null | head -1)"
+  if [ -n "$SP" ]; then
+    python3 - "$SP" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-s = s.replace(
-  'if (platform === "linux") return new LinuxProcessInspector(arch, internals);',
-  'if (platform === "linux" || platform === "android") return new LinuxProcessInspector(arch, internals);')
-open(p, 'w', encoding='utf-8').write(s)
-print("  patched subprocess-local (android→linux)")
+old = 'if (platform === "linux") return new LinuxProcessInspector(arch, internals);'
+new = 'if (platform === "linux" || platform === "android") return new LinuxProcessInspector(arch, internals);'
+if s.count(old) != 1:
+    print(f"  WARN: 平台判断模式未精确匹配（命中 {s.count(old)} 处），跳过；请人工检查 {p}")
+    sys.exit(0)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new))
+print(f"  patched subprocess-local (android→linux): {p}")
 PY
+  else
+    warn "  未找到 subprocess-local 的平台判断模式（dsh 版本可能又变了）"
+    warn "  若终端/PTY 报 'unsupported on platform android'，请手动在 $SP_DIR 下搜 LinuxProcessInspector 并让 android 走 linux 分支"
+  fi
 fi
 
 # 4d: 作曲栏 普通回车=换行（不发送），Ctrl/Cmd+Enter=发送
