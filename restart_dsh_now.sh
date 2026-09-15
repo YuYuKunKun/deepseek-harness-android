@@ -4,6 +4,9 @@ LOG="$HOME/dsh/storage/dsh_restart.log"
 mkdir -p "$HOME/dsh/storage"
 umask 077
 echo "$(date '+%F %T') restart begin" >> "$LOG"
+# 记下启动前的最后一条 token 行：端口就绪会早于新进程的 token 行落盘，
+# 不区分就会把上一个进程（已失效）的 token 打出来，打开必然 401。
+PREV_URL="$(sed -n 's/^dsh web: \(http[^ ]*\).*/\1/p' "$LOG" | tail -1)"
 pkill -f "deepseek-ai/dsh/lib/bin.js" 2>/dev/null
 for i in $(seq 1 20); do
   pgrep -f "deepseek-ai/dsh/lib/bin.js" >/dev/null 2>&1 || break
@@ -22,11 +25,18 @@ for i in $(seq 1 90); do
     echo "$(date '+%F %T') ready on 3080" >> "$LOG"
     # Web UI 有浏览器认证：首次访问必须带本进程的启动 token 才能换取签名 cookie。
     # 本脚本不打开浏览器，所以把带 token 的 URL 打出来（Termux 里可直接点按）。
-    AUTH_URL="$(sed -n 's/^dsh web: \(http[^ ]*\).*/\1/p' "$LOG" | tail -1)"
-    if [ -n "$AUTH_URL" ]; then
+    # 必须等新进程写出自己的 token 行——端口就绪比它早，直接读会拿到旧进程的失效 token。
+    AUTH_URL=""
+    for j in $(seq 1 20); do
+      AUTH_URL="$(sed -n 's/^dsh web: \(http[^ ]*\).*/\1/p' "$LOG" | tail -1)"
+      [ -n "$AUTH_URL" ] && [ "$AUTH_URL" != "$PREV_URL" ] && break
+      sleep 1
+    done
+    if [ -n "$AUTH_URL" ] && [ "$AUTH_URL" != "$PREV_URL" ]; then
       echo "$AUTH_URL"
     else
-      echo "[!] 已就绪，但日志中还没出现带 token 的 URL；稍后可从 $LOG 取，或直接跑 start_dsh.sh"
+      echo "[!] 已就绪，但日志中还没出现本进程的 token URL（20s 超时）；"
+      echo "    可手动取：sed -n 's/^dsh web: \\(http[^ ]*\\).*/\\1/p' $LOG | tail -1"
     fi
     exit 0
   fi

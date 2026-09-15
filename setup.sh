@@ -291,6 +291,39 @@ print("  patched client-ui-conversation (Enter=换行, Ctrl/Cmd+Enter=发送)")
 PY
 fi
 
+# 4f: Android 上 flock 不可用 → 会话租约失败 → 会话日志完全写不出来
+#   症状：会话目录里只有一个 0 字节的 session.lock，没有 session.jsonl.zstd，
+#         Web UI 报 "flock is not supported on android-arm64"。
+#   原因：上游只发布 darwin/linux 的预编译原生包（node-addon-system-<platform>-<arch>），
+#         node-addon-system/lib/flock.js 对 platform==="android" 直接抛
+#         ERR_FLOCK_UNSUPPORTED_PLATFORM；而 dsh-session-persistence-jsonl 只在
+#         EAGAIN/EWOULDBLOCK 时按“锁被占用”降级，其余错误一律上抛。
+#   处理：实测 bionic 本身支持 flock(2)，缺的只是预编译产物。手机上 dsh 是单进程，
+#         这里采用与上游 browser worker 对 flock 完全相同的语义（桩成立即成功）。
+FL="$DSH_DIR/node_modules/@deepseek-ai/node-addon-system/lib/flock.js"
+if grep -q "dsh-android" "$FL" 2>/dev/null; then
+  ok "  node-addon-system flock 已修补（android 单进程语义）"
+else
+  python3 - "$FL" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+anchor = 'export async function tryLockExclusive(fd) {'
+if s.count(anchor) != 1:
+    print(f"  WARN: 未找到 tryLockExclusive 锚点（命中 {s.count(anchor)} 处），跳过；请人工检查 {p}")
+    sys.exit(0)
+inject = (
+    anchor + "\n"
+    "    /* [dsh-android] android 无预编译原生包，但 bionic 支持 flock(2)；\n"
+    "       手机上 dsh 为单进程，采用与上游 browser worker 相同的桩语义（立即成功）。 */\n"
+    "    if (process.platform === 'android')\n"
+    "        return;\n"
+)
+open(p, 'w', encoding='utf-8').write(s.replace(anchor, inject))
+print("  patched node-addon-system flock (android → 单进程语义)")
+PY
+fi
+
 # ------------------------------------------------------ 5/10 sharp wasm 回退
 info "5/10 安装 sharp WebAssembly 回退（android-arm64 无原生预编译）"
 SHARP_VER="$(node -e "console.log(require('$DSH_DIR/node_modules/sharp/package.json').version)" 2>/dev/null || echo 0.35.3)"
