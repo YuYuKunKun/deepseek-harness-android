@@ -140,7 +140,13 @@ elif [ -f "$DSH_DIR/node_modules/node-pty/build/Release/pty.node" ]; then
 else
   warn "  未找到 node-pty 编译产物（PTY / 持久终端将不可用）"
 fi
-test -f "$DSH_DIR/node_modules/koffi/build/koffi/android_arm64/koffi.node" && ok "koffi 编译产物就位" || warn "  未找到 koffi 编译产物（部分原生功能将不可用）"
+# 同样不能用文件存在性判断：koffi 3.x 并不在 build/koffi/android_arm64/ 下
+# （终端实测该路径无 .node，但 require("koffi") 正常）——文件检查会误报缺失。
+if node -e 'require(process.argv[1])' "$DSH_DIR/node_modules/koffi" >/dev/null 2>&1; then
+  ok "koffi 原生模块就位（加载自检通过）"
+else
+  warn "  koffi 加载自检失败（dsh-subprocess-local / fs-local 等将无法加载）"
+fi
 
 # ------------------------------------------------------- 4/10 后端兼容补丁
 info "4/10 后端兼容补丁"
