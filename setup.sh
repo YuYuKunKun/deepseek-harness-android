@@ -37,7 +37,7 @@ INSTALL_DIR="$HOME/dsh"
 # 目标代码，补丁就会静默失配——之前默认装 npm latest，等于每次安装都赌上游没动过。
 # 所以这里锁定一个已验证版本，并把"验证过的版本"列成白名单显式核对。
 SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
-DSH_VERSION_DEFAULT="0.1.5-rc.1"             # 默认安装（= npm latest，也是补丁基线）
+DSH_VERSION_DEFAULT="0.1.5-rc.2"             # 默认安装（= 当前 npm latest，也是补丁基线）
 DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2" # 补丁集已实测通过的版本
 
 is_verified_version() { [[ " $DSH_VERSION_VERIFIED " == *" $1 "* ]]; }
