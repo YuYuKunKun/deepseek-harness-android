@@ -29,11 +29,64 @@ warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 ok()    { printf '\033[1;32m[v]\033[0m %s\n' "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # 脚本真实目录（脚本中段会 cd，须用绝对路径）
-# 安装哪个 dsh：默认 npm latest；用环境变量可指定版本/标签，例如
-#   DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh
-DSH_NPM="${DSH_NPM:-@deepseek-ai/dsh}"
 DSH_DIR="/data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh"
 INSTALL_DIR="$HOME/dsh"
+
+# ============================== 版本控制 ==============================
+# 为什么钉版本：本脚本会给 dsh 打一批就地补丁（4a~4f + 前端/JS 补丁）。上游一旦改动
+# 目标代码，补丁就会静默失配——之前默认装 npm latest，等于每次安装都赌上游没动过。
+# 所以这里锁定一个已验证版本，并把"验证过的版本"列成白名单显式核对。
+SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
+DSH_VERSION_DEFAULT="0.1.5-rc.1"             # 默认安装（= npm latest，也是补丁基线）
+DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2" # 补丁集已实测通过的版本
+
+is_verified_version() { [[ " $DSH_VERSION_VERIFIED " == *" $1 "* ]]; }
+installed_dsh_version() {
+  [ -f "$DSH_DIR/package.json" ] || return 0
+  node -e 'try{process.stdout.write(require(process.argv[1]).version)}catch{}' \
+    "$DSH_DIR/package.json" 2>/dev/null || true
+}
+
+# 目标解析优先级：
+#   1) DSH_NPM      —— 完整 spec，最高优先级（CI / 特殊源 / 本地 tgz 都可）
+#   2) DSH_VERSION  —— 只给版本或标签，如 0.1.5-rc.2 / latest / next
+#   3) 已安装且在白名单内 —— 保持现状，避免重跑脚本时把用户降级
+#   4) DSH_VERSION_DEFAULT
+DSH_VERSION_SOURCE=""
+if [ -n "${DSH_NPM:-}" ]; then
+  DSH_VERSION_SOURCE="环境变量 DSH_NPM"
+elif [ -n "${DSH_VERSION:-}" ]; then
+  DSH_NPM="@deepseek-ai/dsh@${DSH_VERSION}"
+  DSH_VERSION_SOURCE="环境变量 DSH_VERSION"
+else
+  CURRENT_VERSION="$(installed_dsh_version)"
+  if [ -n "$CURRENT_VERSION" ] && is_verified_version "$CURRENT_VERSION"; then
+    DSH_NPM="@deepseek-ai/dsh@${CURRENT_VERSION}"
+    DSH_VERSION_SOURCE="沿用已安装且已验证的版本 ${CURRENT_VERSION}"
+  else
+    DSH_NPM="@deepseek-ai/dsh@${DSH_VERSION_DEFAULT}"
+    DSH_VERSION_SOURCE="默认已验证版本"
+  fi
+fi
+# 请求的版本号（仅当 spec 形如 @deepseek-ai/dsh@<ver> 时能解析出来）
+DSH_REQUESTED_VERSION=""
+case "$DSH_NPM" in
+  "@deepseek-ai/dsh@"*) DSH_REQUESTED_VERSION="${DSH_NPM#@deepseek-ai/dsh@}" ;;
+esac
+# =====================================================================
+
+info "setup.sh v${SETUP_VERSION} · 安装目标 ${DSH_NPM}（${DSH_VERSION_SOURCE}）"
+if [ -n "$DSH_REQUESTED_VERSION" ]; then
+  if is_verified_version "$DSH_REQUESTED_VERSION"; then
+    ok "  版本 ${DSH_REQUESTED_VERSION} 在已验证列表内（${DSH_VERSION_VERIFIED}）"
+  else
+    warn "  版本 ${DSH_REQUESTED_VERSION} 不在已验证列表内（${DSH_VERSION_VERIFIED}）"
+    warn "  补丁可能失配；失配时脚本会如实报 WARN，不会假装成功"
+  fi
+else
+  warn "  spec 未锁定版本（跟随 registry 的 latest 标签）"
+  warn "  上游发新版后补丁可能失配；建议改为 DSH_VERSION=${DSH_VERSION_DEFAULT}"
+fi
 
 # ---------------------------------------------------------------- 1/10 依赖
 info "1/10 安装构建依赖 (cmake clang make binutils pkg-config python nodejs)"
@@ -146,6 +199,24 @@ if node -e 'require(process.argv[1])' "$DSH_DIR/node_modules/koffi" >/dev/null 2
   ok "koffi 原生模块就位（加载自检通过）"
 else
   warn "  koffi 加载自检失败（dsh-subprocess-local / fs-local 等将无法加载）"
+fi
+
+# ------------------------------------------------- 3.1 安装后版本核对
+# 请求的版本未必等于实际装上的（registry 解析、标签漂移、缓存等），所以以磁盘为准核对一次。
+INSTALLED_VERSION="$(installed_dsh_version)"
+if [ -z "$INSTALLED_VERSION" ]; then
+  warn "  无法读取已安装 dsh 的版本（$DSH_DIR/package.json）"
+else
+  ok "  已安装 dsh 版本：${INSTALLED_VERSION}"
+  if [ -n "$DSH_REQUESTED_VERSION" ] && [ "$INSTALLED_VERSION" != "$DSH_REQUESTED_VERSION" ]; then
+    warn "  请求的是 ${DSH_REQUESTED_VERSION}，实际装上的是 ${INSTALLED_VERSION}（registry 解析差异？）"
+  fi
+  if is_verified_version "$INSTALLED_VERSION"; then
+    ok "  在已验证列表内（${DSH_VERSION_VERIFIED}）"
+  else
+    warn "  不在已验证列表内（${DSH_VERSION_VERIFIED}）——后续补丁若失配，请以 WARN 行为准"
+    warn "  可改用已验证版本重跑：DSH_VERSION=${DSH_VERSION_DEFAULT} bash setup.sh"
+  fi
 fi
 
 # ------------------------------------------------------- 4/10 后端兼容补丁
@@ -388,8 +459,27 @@ fi
 # -------------------------------------------------- 9/10 JS 性能补丁(可选)
 if [ -f "$SCRIPT_DIR/apply-js-patches.sh" ]; then
   info "9/10 应用 JS 性能补丁（静态资源 immutable 缓存）"
-  bash "$SCRIPT_DIR/apply-js-patches.sh" || warn "JS 性能补丁未全部应用（不影响基本使用，详见 apply-js-patches.sh 输出）"
+  # 把已验证版本列表传下去，避免两个脚本各自硬编码基线而漂移
+  DSH_PATCH_BASELINE="$DSH_VERSION_VERIFIED" \
+    bash "$SCRIPT_DIR/apply-js-patches.sh" || warn "JS 性能补丁未全部应用（不影响基本使用，详见 apply-js-patches.sh 输出）"
 fi
+
+# ------------------------------------------------- 版本记录（便于事后排查）
+# 回答"这台机器是哪次、用哪个版本的脚本、装的哪个 dsh"——升级或换机后不用靠记忆。
+mkdir -p "$INSTALL_DIR"
+GIT_REV="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+GIT_DIRTY=""
+if [ -n "$GIT_REV" ] && ! git -C "$SCRIPT_DIR" diff --quiet 2>/dev/null; then GIT_DIRTY=" (有未提交改动)"; fi
+cat > "$INSTALL_DIR/INSTALL-INFO.txt" <<EOF
+setup.sh 版本    : v${SETUP_VERSION}${GIT_REV:+  git ${GIT_REV}${GIT_DIRTY}}
+安装目标 spec    : ${DSH_NPM}
+目标来源         : ${DSH_VERSION_SOURCE}
+实际安装版本     : ${INSTALLED_VERSION:-未知}
+已验证版本列表   : ${DSH_VERSION_VERIFIED}
+权限模式         : danger-full-access
+安装时间         : $(date '+%F %T %z')
+EOF
+ok "  安装记录已写入 $INSTALL_DIR/INSTALL-INFO.txt"
 
 # ---------------------------------------------------------------- 10/10 完成
 info "10/10 完成 🎉"

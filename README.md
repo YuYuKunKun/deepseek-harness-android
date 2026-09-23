@@ -6,6 +6,7 @@
 
 > [!IMPORTANT]
 > **适配基线：deepseek-harness `0.1.5-rc.1`**（npm `latest` 标签），`0.1.5-rc.2`（`next`）亦验证通过。
+> `setup.sh` 默认安装的就是这个**已验证版本**而不是 npm `latest`，并在安装后核对实际版本（见「三、使用」的版本控制）。
 > 早期面向 `0.1.0-rc.x` 的性能补丁多数已作废：上游重写了 history / 实时流链路并自行实现了这些优化，
 > 详见 [`patches/obsolete/README.md`](patches/obsolete/README.md)。
 
@@ -47,15 +48,27 @@ bash ~/dsh/stop_dsh.sh    # 停止
 
 打开 <http://127.0.0.1:3080>，在 **Models** 页填入你的 **DeepSeek API Key**（存于 `~/.dsh/.credentials.yaml`，0600 权限），即可开始。
 
-**升级 / 指定 dsh 版本**：不要在 Termux 里直接 `npm install -g @deepseek-ai/dsh@x.y.z` —— 那会丢掉 `--allow-scripts`、koffi 的 `-target aarch64-linux-android30` 和 spawn.h shim，`node-pty` / `koffi` 原生模块会缺失。必须重跑 `setup.sh`，用 `DSH_NPM` 指定版本：
+**升级 / 指定 dsh 版本**：不要在 Termux 里直接 `npm install -g @deepseek-ai/dsh@x.y.z` —— 那会丢掉 `--allow-scripts`、koffi 的 `-target aarch64-linux-android30` 和 spawn.h shim，`node-pty` / `koffi` 原生模块会缺失。必须重跑 `setup.sh`。
+
+`setup.sh` 自带**版本控制**：它默认安装一个**已实测通过补丁的版本**，而不是 npm `latest`——因为上游一改代码，就地补丁就会失配（这正是本项目历史上最频繁的故障源）。
 
 ```bash
 cd ~/deepseek-harness-android
-DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh
-bash ~/dsh/restart_dsh_now.sh      # 重启，并打印带 token 的 Web UI URL
+
+bash setup.sh                                    # 装默认已验证版本
+DSH_VERSION=0.1.5-rc.2 bash setup.sh             # 指定版本
+DSH_VERSION=next bash setup.sh                    # 按 npm 标签
+DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh   # 完整 spec（优先级最高）
+bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token 的 Web UI URL
 ```
 
-不带 `DSH_NPM` 时安装 npm `latest`；也可以按标签装，例如 `DSH_NPM='@deepseek-ai/dsh@next'`。升级后留意 `setup.sh` 输出里的 `WARN` 行——上游改动会让某个补丁的匹配模式失效，脚本现在会如实报告而不是假装成功。
+解析优先级：`DSH_NPM` > `DSH_VERSION` > **已安装且在白名单内的版本**（重跑脚本不会把你悄悄降级）> 默认已验证版本。脚本会：
+
+- 安装前打印目标版本、来源、是否在已验证白名单内（不在就明确告警）；
+- 安装后按磁盘上的 `package.json` **核对实际装上的版本**，与请求不符或在白名单外都会告警；
+- 把结果写进 `~/dsh/INSTALL-INFO.txt`（setup.sh 版本、git 版本、目标 spec、实际版本、时间），换机或升级后不必靠记忆。
+
+白名单与默认版本定义在 `setup.sh` 顶部的 `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT` 两个变量里，新增验证通过的版本时改这一处即可（`apply-js-patches.sh` 的基线由 `setup.sh` 传入，不再各自硬编码）。
 
 ### 四、setup.sh 自动修复的 Android 兼容问题
 
@@ -146,15 +159,27 @@ bash ~/dsh/stop_dsh.sh    # stop
 
 Open <http://127.0.0.1:3080>, enter your **DeepSeek API Key** in the **Models** page (stored at `~/.dsh/.credentials.yaml`, mode 0600), and start chatting.
 
-**Upgrading / pinning a dsh version**: do **not** run `npm install -g @deepseek-ai/dsh@x.y.z` directly in Termux — that drops `--allow-scripts`, koffi's `-target aarch64-linux-android30`, and the spawn.h shim, leaving `node-pty` / `koffi` without native binaries. Re-run `setup.sh` and pick the version with `DSH_NPM`:
+**Upgrading / pinning a dsh version**: do **not** run `npm install -g @deepseek-ai/dsh@x.y.z` directly in Termux — that drops `--allow-scripts`, koffi's `-target aarch64-linux-android30`, and the spawn.h shim, leaving `node-pty` / `koffi` without native binaries. Re-run `setup.sh` instead.
+
+`setup.sh` has **version control built in**: it installs a version the patch set is actually verified against, instead of whatever npm `latest` happens to be — because upstream code changes silently invalidate the in-place patches (historically this project's most frequent failure).
 
 ```bash
 cd ~/deepseek-harness-android
-DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh
-bash ~/dsh/restart_dsh_now.sh      # restart, then prints the tokenized Web UI URL
+
+bash setup.sh                                    # default verified version
+DSH_VERSION=0.1.5-rc.2 bash setup.sh             # explicit version
+DSH_VERSION=next bash setup.sh                    # npm dist-tag
+DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh   # full spec (highest precedence)
+bash ~/dsh/restart_dsh_now.sh                    # restart, then prints the tokenized Web UI URL
 ```
 
-Without `DSH_NPM` the npm `latest` tag is installed; a tag also works, e.g. `DSH_NPM='@deepseek-ai/dsh@next'`. After an upgrade, watch the `WARN` lines in `setup.sh` output — upstream changes can invalidate a patch's match pattern, and the script now reports that honestly instead of printing a false success.
+Precedence: `DSH_NPM` > `DSH_VERSION` > **installed version if it is on the verified list** (re-running never silently downgrades you) > the pinned default. The script:
+
+- prints the target version, why it was chosen, and whether it is on the verified whitelist before installing (loud warning when it is not);
+- verifies the **actually installed** version from `package.json` afterwards, warning if it differs from the request or is off-list;
+- records everything in `~/dsh/INSTALL-INFO.txt` (setup.sh version, git revision, target spec, installed version, timestamp).
+
+The whitelist and default live in `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT` at the top of `setup.sh` — add a newly verified version in that one place (`apply-js-patches.sh` receives the baseline from `setup.sh` instead of hardcoding its own).
 
 ### 4. Android issues auto-fixed by setup.sh
 

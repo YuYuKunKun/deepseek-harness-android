@@ -27,9 +27,15 @@ PATCHES=(04-frontend-static-cache)
 [ -d "$DSH_PACKAGES_DIR" ] || { echo "[apply-js-patches] 未找到 dsh 安装目录: $DSH_PACKAGES_DIR"; exit 1; }
 
 # 打印 dsh 版本：补丁对不上时，这是第一个要看的信息。
+# DSH_PATCH_BASELINE 由 setup.sh 传入（它持有版本控制白名单）；单独运行时有兜底默认值。
 DSH_DIR="$(dirname "$(dirname "$DSH_PACKAGES_DIR")")"
+DSH_PATCH_BASELINE="${DSH_PATCH_BASELINE:-0.1.5-rc.1 0.1.5-rc.2}"
 DSH_VER="$(node -e 'try{console.log(require(process.argv[1]).version)}catch{}' "$DSH_DIR/package.json" 2>/dev/null || true)"
-echo "[apply-js-patches] dsh 版本：${DSH_VER:-未知}（活补丁基线 0.1.5-rc.1）"
+echo "[apply-js-patches] dsh 版本：${DSH_VER:-未知}（补丁已验证：${DSH_PATCH_BASELINE}）"
+case " ${DSH_PATCH_BASELINE} " in
+  *" ${DSH_VER} "*) ;;
+  *) [ -n "$DSH_VER" ] && echo "  [warn] dsh ${DSH_VER} 不在已验证列表内——补丁若失配，可用 DSH_VERSION=<已验证版本> 重跑 setup.sh" ;;
+esac
 
 applied=0; skipped=0; failed=0
 for name in "${PATCHES[@]}"; do
