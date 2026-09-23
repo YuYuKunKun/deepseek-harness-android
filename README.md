@@ -5,8 +5,13 @@
 > 点击下方语言标题切换 · Click a language below to view its README.
 
 > [!IMPORTANT]
-> **适配基线：deepseek-harness `0.1.5-rc.1`**（npm `latest` 标签），`0.1.5-rc.2`（`next`）亦验证通过。
+> **适配基线：deepseek-harness `0.1.5-rc.3`**（补丁集在 `rc.1` / `rc.2` / `rc.3` 上均实测通过）。
 > `setup.sh` 默认安装的就是这个**已验证版本**而不是 npm `latest`，并在安装后核对实际版本（见「三、使用」的版本控制）。
+>
+> ⚠️ **`0.1.5-rc.1` / `0.1.5-rc.2` 目前已经装不上了**：上游 `@deepseek-ai/cordis` 于 2026-09-22 发布 `4.0.3` / `4.0.4`，
+> 而这两个 dsh 版本声明 `^4.0.2`、其子包却精确要求 `4.0.2` —— npm 会把 `dsh-web-app` 那一整层依赖**嵌套**安装，
+> 于是 dsh 启动时报一长串 `plugin(s) failed to load ... could not be resolved`。`rc.3` 已把 cordis 精确锁 `4.0.2`，不受影响。
+>
 > 早期面向 `0.1.0-rc.x` 的性能补丁多数已作废：上游重写了 history / 实时流链路并自行实现了这些优化，
 > 详见 [`patches/obsolete/README.md`](patches/obsolete/README.md)。
 
@@ -56,9 +61,9 @@ bash ~/dsh/stop_dsh.sh    # 停止
 cd ~/deepseek-harness-android
 
 bash setup.sh                                    # 装默认已验证版本
-DSH_VERSION=0.1.5-rc.2 bash setup.sh             # 指定版本
+DSH_VERSION=0.1.5-rc.3 bash setup.sh             # 指定版本
 DSH_VERSION=next bash setup.sh                    # 按 npm 标签
-DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh   # 完整 spec（优先级最高）
+DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.3' bash setup.sh   # 完整 spec（优先级最高）
 bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token 的 Web UI URL
 ```
 
@@ -167,9 +172,9 @@ Open <http://127.0.0.1:3080>, enter your **DeepSeek API Key** in the **Models** 
 cd ~/deepseek-harness-android
 
 bash setup.sh                                    # default verified version
-DSH_VERSION=0.1.5-rc.2 bash setup.sh             # explicit version
+DSH_VERSION=0.1.5-rc.3 bash setup.sh             # explicit version
 DSH_VERSION=next bash setup.sh                    # npm dist-tag
-DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.2' bash setup.sh   # full spec (highest precedence)
+DSH_NPM='@deepseek-ai/dsh@0.1.5-rc.3' bash setup.sh   # full spec (highest precedence)
 bash ~/dsh/restart_dsh_now.sh                    # restart, then prints the tokenized Web UI URL
 ```
 

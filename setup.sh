@@ -37,10 +37,16 @@ INSTALL_DIR="$HOME/dsh"
 # 目标代码，补丁就会静默失配——之前默认装 npm latest，等于每次安装都赌上游没动过。
 # 所以这里锁定一个已验证版本，并把"验证过的版本"列成白名单显式核对。
 SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
-DSH_VERSION_DEFAULT="0.1.5-rc.2"             # 默认安装（= 当前 npm latest，也是补丁基线）
-DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2" # 补丁集已实测通过的版本
+DSH_VERSION_DEFAULT="0.1.5-rc.3"             # 默认安装（当前唯一能干净装上的已适配版本）
+DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3" # 补丁集已实测通过的版本
+# 上游依赖回归（2026-09-22 起）：@deepseek-ai/cordis 发布了 4.0.3/4.0.4，
+# 而 dsh rc.1/rc.2 声明的是 `^4.0.2`、其子包却精确要 `4.0.2`。npm 于是把顶层装成
+# 4.0.4、再把 dsh-web-app 那一整层依赖嵌套进 node_modules，结果 dsh 启动时所有
+# 插件 "could not be resolved"。rc.3 已把 cordis 精确锁 4.0.2，不再受影响。
+DSH_VERSION_INSTALL_BROKEN="0.1.5-rc.1 0.1.5-rc.2"
 
 is_verified_version() { [[ " $DSH_VERSION_VERIFIED " == *" $1 "* ]]; }
+is_install_broken_version() { [[ " $DSH_VERSION_INSTALL_BROKEN " == *" $1 "* ]]; }
 installed_dsh_version() {
   [ -f "$DSH_DIR/package.json" ] || return 0
   node -e 'try{process.stdout.write(require(process.argv[1]).version)}catch{}' \
@@ -86,6 +92,12 @@ if [ -n "$DSH_REQUESTED_VERSION" ]; then
 else
   warn "  spec 未锁定版本（跟随 registry 的 latest 标签）"
   warn "  上游发新版后补丁可能失配；建议改为 DSH_VERSION=${DSH_VERSION_DEFAULT}"
+fi
+# 补丁能打 ≠ 装得上：cordis 4.0.3/4.0.4 发布后 rc.1/rc.2 全新安装会被解析成嵌套树
+if [ -n "$DSH_REQUESTED_VERSION" ] && is_install_broken_version "$DSH_REQUESTED_VERSION"; then
+  warn "  ⚠ ${DSH_REQUESTED_VERSION} 目前无法干净安装：cordis 4.0.3+ 会让 npm 解析出嵌套"
+  warn "    依赖树，dsh 启动时插件全部 'could not be resolved'（详见脚本内注释）"
+  warn "    请改用 DSH_VERSION=${DSH_VERSION_DEFAULT}"
 fi
 
 # ---------------------------------------------------------------- 1/10 依赖
