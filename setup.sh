@@ -39,14 +39,23 @@ INSTALL_DIR="$HOME/dsh"
 SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
 DSH_VERSION_DEFAULT="0.1.5-rc.3"             # 默认安装（当前唯一能干净装上的已适配版本）
 DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3" # 补丁集已实测通过的版本
-# 上游依赖回归（2026-09-22 起）：@deepseek-ai/cordis 发布了 4.0.3/4.0.4，
-# 而 dsh rc.1/rc.2 声明的是 `^4.0.2`、其子包却精确要 `4.0.2`。npm 于是把顶层装成
-# 4.0.4、再把 dsh-web-app 那一整层依赖嵌套进 node_modules，结果 dsh 启动时所有
-# 插件 "could not be resolved"。rc.3 已把 cordis 精确锁 4.0.2，不再受影响。
-DSH_VERSION_INSTALL_BROKEN="0.1.5-rc.1 0.1.5-rc.2"
+# 已知在 Android/Termux 上跑不起来的版本（"补丁能打" ≠ "能跑"）：
+#
+#   0.1.5-rc.1 / 0.1.5-rc.2 —— cordis 回归：@deepseek-ai/cordis 于 2026-09-22 发布
+#       4.0.3/4.0.4，而这两个 dsh 声明 `^4.0.2`、其子包却精确要 `4.0.2`。npm 于是把
+#       顶层装成 4.0.4、再把 dsh-web-app 那一整层依赖**嵌套**进 node_modules，启动时
+#       ~90 个插件全部 "could not be resolved"。rc.3 精确锁 4.0.2 才修好。
+#
+#   0.1.7-rc.2 —— 新增原生插件 node-addon-require-builtin（被 cordis-plugin-loader /
+#       dsh-app-boot 依赖，属插件加载器本身）。它的预编译包只有 darwin/linux/win32，
+#       没有 android；且发布的 npm 包不含源码（无 src/、无 binding.gyp、无 repository），
+#       无法像 node-addon-system 那样自行编译。启动即失败：
+#         No usable native binding found for node-addon-require-builtin-android-arm64
+#       加载器只有 optional-package / local-build 两条来源，没有 JS 回退。
+DSH_VERSION_UNUSABLE="0.1.5-rc.1 0.1.5-rc.2 0.1.7-rc.2"
 
 is_verified_version() { [[ " $DSH_VERSION_VERIFIED " == *" $1 "* ]]; }
-is_install_broken_version() { [[ " $DSH_VERSION_INSTALL_BROKEN " == *" $1 "* ]]; }
+is_unusable_version() { [[ " $DSH_VERSION_UNUSABLE " == *" $1 "* ]]; }
 installed_dsh_version() {
   [ -f "$DSH_DIR/package.json" ] || return 0
   node -e 'try{process.stdout.write(require(process.argv[1]).version)}catch{}' \
@@ -93,10 +102,12 @@ else
   warn "  spec 未锁定版本（跟随 registry 的 latest 标签）"
   warn "  上游发新版后补丁可能失配；建议改为 DSH_VERSION=${DSH_VERSION_DEFAULT}"
 fi
-# 补丁能打 ≠ 装得上：cordis 4.0.3/4.0.4 发布后 rc.1/rc.2 全新安装会被解析成嵌套树
-if [ -n "$DSH_REQUESTED_VERSION" ] && is_install_broken_version "$DSH_REQUESTED_VERSION"; then
-  warn "  ⚠ ${DSH_REQUESTED_VERSION} 目前无法干净安装：cordis 4.0.3+ 会让 npm 解析出嵌套"
-  warn "    依赖树，dsh 启动时插件全部 'could not be resolved'（详见脚本内注释）"
+# 补丁能打 ≠ 能在 Android 上跑起来
+if [ -n "$DSH_REQUESTED_VERSION" ] && is_unusable_version "$DSH_REQUESTED_VERSION"; then
+  warn "  ⚠ ${DSH_REQUESTED_VERSION} 已知在 Android/Termux 上跑不起来（原因见脚本内注释）"
+  warn "    · 0.1.5-rc.1/rc.2：cordis 4.0.3+ 让 npm 解析出嵌套依赖树，插件全部解析失败"
+  warn "    · 0.1.7-rc.2     ：新增原生插件 node-addon-require-builtin 无 android 预编译、"
+  warn "                       发布包亦无源码，启动即报 No usable native binding"
   warn "    请改用 DSH_VERSION=${DSH_VERSION_DEFAULT}"
 fi
 
@@ -194,6 +205,11 @@ SPAWN_SHIM
   chmod 644 "$SPHIM_DIR/spawn.h"
   EXTRA_FLAGS="$EXTRA_FLAGS -I$SPHIM_DIR"
 fi
+# npm 装包时会创建 $PREFIX/bin/dsh，而第 6 步我们会把它换成 --expose-internals 包装脚本。
+# 重跑本脚本时，上一次留下的包装脚本是**普通文件**而非 npm 的符号链接，npm 会直接以
+#   npm error code EEXIST / File exists: .../bin/dsh
+# 失败（真机复现）。所以必须在安装前先清掉它。
+rm -f /data/data/com.termux/files/usr/bin/dsh
 CFLAGS="$EXTRA_FLAGS" CXXFLAGS="$EXTRA_FLAGS" \
   npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs "$DSH_NPM"
 # 加载自检：执行 .node 文件本身会触发 Illegal instruction（它是共享库，不是可执行文件），

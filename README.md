@@ -12,6 +12,12 @@
 > 而这两个 dsh 版本声明 `^4.0.2`、其子包却精确要求 `4.0.2` —— npm 会把 `dsh-web-app` 那一整层依赖**嵌套**安装，
 > 于是 dsh 启动时报一长串 `plugin(s) failed to load ... could not be resolved`。`rc.3` 已把 cordis 精确锁 `4.0.2`，不受影响。
 >
+> ⚠️ **`0.1.7-rc.2`（`next`）在 Android 上跑不起来**：它新增了原生插件 `node-addon-require-builtin`（被 cordis-plugin-loader
+> 与 dsh-app-boot 依赖，即插件加载器本身），而该插件的预编译包**只有 darwin / linux / win32，没有 android**，
+> 且发布到 npm 的包里**不含源码**（无 `src/`、无 `binding.gyp`、无 repository 字段），**无法像 `node-addon-system` 那样自行编译**。
+> 启动即失败：`No usable native binding found for node-addon-require-builtin-android-arm64`（加载器只有
+> optional-package / local-build 两条来源，没有 JS 回退）。`setup.sh` 会在安装前拦住它。
+>
 > 早期面向 `0.1.0-rc.x` 的性能补丁多数已作废：上游重写了 history / 实时流链路并自行实现了这些优化，
 > 详见 [`patches/obsolete/README.md`](patches/obsolete/README.md)。
 
