@@ -1,0 +1,8 @@
+{
+  "name": "node-addon-require-builtin-android-arm64",
+  "version": "0.1.6",
+  "description": "[dsh-android] JS replacement for the missing android-arm64 prebuild of node-addon-require-builtin",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true
+}

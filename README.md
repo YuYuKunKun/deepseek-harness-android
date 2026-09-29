@@ -5,18 +5,19 @@
 > 点击下方语言标题切换 · Click a language below to view its README.
 
 > [!IMPORTANT]
-> **适配基线：deepseek-harness `0.1.5-rc.3`**（补丁集在 `rc.1` / `rc.2` / `rc.3` 上均实测通过）。
-> `setup.sh` 默认安装的就是这个**已验证版本**而不是 npm `latest`，并在安装后核对实际版本（见「三、使用」的版本控制）。
+> **适配基线：deepseek-harness `0.1.5-rc.3`（默认）**，补丁集在 `rc.1` / `rc.2` / `rc.3` / **`0.2.0-rc.2`** 上均实测通过。
+> `setup.sh` 默认安装的是**已验证版本**而不是 npm `latest`，并在安装后核对实际版本（见「三、使用」的版本控制）。
+> 想上新版就显式指定，例如 `DSH_VERSION=0.2.0-rc.2 bash setup.sh`。
 >
 > ⚠️ **`0.1.5-rc.1` / `0.1.5-rc.2` 目前已经装不上了**：上游 `@deepseek-ai/cordis` 于 2026-09-22 发布 `4.0.3` / `4.0.4`，
 > 而这两个 dsh 版本声明 `^4.0.2`、其子包却精确要求 `4.0.2` —— npm 会把 `dsh-web-app` 那一整层依赖**嵌套**安装，
 > 于是 dsh 启动时报一长串 `plugin(s) failed to load ... could not be resolved`。`rc.3` 已把 cordis 精确锁 `4.0.2`，不受影响。
 >
-> ⚠️ **`0.1.7-rc.2`（`next`）在 Android 上跑不起来**：它新增了原生插件 `node-addon-require-builtin`（被 cordis-plugin-loader
-> 与 dsh-app-boot 依赖，即插件加载器本身），而该插件的预编译包**只有 darwin / linux / win32，没有 android**，
-> 且发布到 npm 的包里**不含源码**（无 `src/`、无 `binding.gyp`、无 repository 字段），**无法像 `node-addon-system` 那样自行编译**。
-> 启动即失败：`No usable native binding found for node-addon-require-builtin-android-arm64`（加载器只有
-> optional-package / local-build 两条来源，没有 JS 回退）。`setup.sh` 会在安装前拦住它。
+> 🔧 **`0.1.7` 及以后的原生插件缺失已自动补齐**：这些版本新增了原生插件 `node-addon-require-builtin`（由 `dsh-app-boot`
+> 在启动必经路径上裸 `require`），而它的预编译包**只有 darwin / linux / win32，没有 android**，发布包**也不含源码**
+> （无 `src/`、无 `binding.gyp`、无 repository 字段），无法自行编译。`setup.sh` 第 3.2 步会自动放入一个 **JS 替代实现**
+> （源码见 [`patches/android-shim/`](patches/android-shim/)，附完整依据）：原生绑定的唯一用途就是取 Node 内部模块，
+> 而包装脚本本来就带 `--expose-internals`，用 `require` 即可等价完成。`0.2.0-rc.2` 已实测通过。
 >
 > 早期面向 `0.1.0-rc.x` 的性能补丁多数已作废：上游重写了 history / 实时流链路并自行实现了这些优化，
 > 详见 [`patches/obsolete/README.md`](patches/obsolete/README.md)。
@@ -92,6 +93,7 @@ bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token �
 | PTY 终端检测失败 | `unsupported on platform android` | subprocess 把 android 视同 linux |
 | sharp 无法加载 | `Could not load sharp module` | 安装 `@img/sharp-wasm32` wasm 回退 |
 | HMR 启动崩溃 | `--expose-internals is required` | 包装脚本加 `--expose-internals` |
+| 启动报原生绑定缺失（0.1.7+） | `No usable native binding found for node-addon-require-builtin-android-arm64` | 上游该插件无 android 预编译、发布包也无源码 → `setup.sh` 第 3.2 步自动放入 JS 替代实现（`patches/android-shim/`，用 `require` 取同一批 Node 内部模块） |
 | bash 工具不可用 | `SANDBOX_UNAVAILABLE` | 权限模式设 `danger-full-access` |
 | 前端不适配竖屏 | 桌面布局、触控目标小等 | `apply-frontend.sh` 注入移动端 CSS/JS |
 | 软键盘遮挡输入框 | 输入法弹出后输入框被键盘盖住 | `visualViewport` 跟随：键盘弹出时整页（含输入框）抬到键盘上方，收回时还原 |
@@ -203,6 +205,7 @@ The whitelist and default live in `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT`
 | PTY terminal detection fails | `unsupported on platform android` | treat android as linux in subprocess |
 | sharp fails to load | `Could not load sharp module` | install `@img/sharp-wasm32` wasm fallback |
 | HMR crashes on start | `--expose-internals is required` | wrapper script adds `--expose-internals` |
+| Startup: missing native binding (0.1.7+) | `No usable native binding found for node-addon-require-builtin-android-arm64` | upstream ships no android prebuild and no source for that addon → `setup.sh` step 3.2 installs a JS replacement (`patches/android-shim/`) that reaches the same Node internal modules via `require` |
 | bash tool unavailable | `SANDBOX_UNAVAILABLE` | permission mode `danger-full-access` |
 | Frontend not mobile-ready | desktop layout, small touch targets | `apply-frontend.sh` injects mobile CSS/JS |
 | Soft keyboard covers the input | input box hidden behind the IME when it opens | `visualViewport`-driven follow: page (incl. input) lifts above the keyboard on open, restores on close |

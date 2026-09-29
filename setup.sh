@@ -37,22 +37,20 @@ INSTALL_DIR="$HOME/dsh"
 # 目标代码，补丁就会静默失配——之前默认装 npm latest，等于每次安装都赌上游没动过。
 # 所以这里锁定一个已验证版本，并把"验证过的版本"列成白名单显式核对。
 SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
-DSH_VERSION_DEFAULT="0.1.5-rc.3"             # 默认安装（当前唯一能干净装上的已适配版本）
-DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3" # 补丁集已实测通过的版本
+DSH_VERSION_DEFAULT="0.1.5-rc.3"             # 默认安装（无需 shim、最保守的已验证版本）
+DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2" # 补丁集已实测通过的版本
 # 已知在 Android/Termux 上跑不起来的版本（"补丁能打" ≠ "能跑"）：
 #
 #   0.1.5-rc.1 / 0.1.5-rc.2 —— cordis 回归：@deepseek-ai/cordis 于 2026-09-22 发布
 #       4.0.3/4.0.4，而这两个 dsh 声明 `^4.0.2`、其子包却精确要 `4.0.2`。npm 于是把
 #       顶层装成 4.0.4、再把 dsh-web-app 那一整层依赖**嵌套**进 node_modules，启动时
-#       ~90 个插件全部 "could not be resolved"。rc.3 精确锁 4.0.2 才修好。
+#       ~90 个插件全部 "could not be resolved"。这是依赖解析层面的问题，补 shim 也救不了。
 #
-#   0.1.7-rc.2 —— 新增原生插件 node-addon-require-builtin（被 cordis-plugin-loader /
-#       dsh-app-boot 依赖，属插件加载器本身）。它的预编译包只有 darwin/linux/win32，
-#       没有 android；且发布的 npm 包不含源码（无 src/、无 binding.gyp、无 repository），
-#       无法像 node-addon-system 那样自行编译。启动即失败：
-#         No usable native binding found for node-addon-require-builtin-android-arm64
-#       加载器只有 optional-package / local-build 两条来源，没有 JS 回退。
-DSH_VERSION_UNUSABLE="0.1.5-rc.1 0.1.5-rc.2 0.1.7-rc.2"
+#   0.1.7 及以后的版本线新增了原生插件 node-addon-require-builtin（由 dsh-app-boot 的
+#       internalModules() 裸 require，属启动必经路径），它没有 android 预编译、也无法
+#       自行编译 —— 但第 3.2 步会自动放入 JS 替代实现，所以这些版本不算"不可用"。
+#       其中 0.2.0-rc.2 已实测通过（启动 <5s、认证 200、5 个补丁全部落地）。
+DSH_VERSION_UNUSABLE="0.1.5-rc.1 0.1.5-rc.2"
 
 is_verified_version() { [[ " $DSH_VERSION_VERIFIED " == *" $1 "* ]]; }
 is_unusable_version() { [[ " $DSH_VERSION_UNUSABLE " == *" $1 "* ]]; }
@@ -104,10 +102,9 @@ else
 fi
 # 补丁能打 ≠ 能在 Android 上跑起来
 if [ -n "$DSH_REQUESTED_VERSION" ] && is_unusable_version "$DSH_REQUESTED_VERSION"; then
-  warn "  ⚠ ${DSH_REQUESTED_VERSION} 已知在 Android/Termux 上跑不起来（原因见脚本内注释）"
-  warn "    · 0.1.5-rc.1/rc.2：cordis 4.0.3+ 让 npm 解析出嵌套依赖树，插件全部解析失败"
-  warn "    · 0.1.7-rc.2     ：新增原生插件 node-addon-require-builtin 无 android 预编译、"
-  warn "                       发布包亦无源码，启动即报 No usable native binding"
+  warn "  ⚠ ${DSH_REQUESTED_VERSION} 已知在 Android/Termux 上装不起来（原因见脚本内注释）"
+  warn "    cordis 4.0.3+ 让 npm 把 dsh-web-app 那一层依赖嵌套安装，插件全部解析失败；"
+  warn "    这是依赖解析层面的问题，第 3.2 步的原生插件替代实现救不了它。"
   warn "    请改用 DSH_VERSION=${DSH_VERSION_DEFAULT}"
 fi
 
@@ -244,6 +241,38 @@ else
   else
     warn "  不在已验证列表内（${DSH_VERSION_VERIFIED}）——后续补丁若失配，请以 WARN 行为准"
     warn "  可改用已验证版本重跑：DSH_VERSION=${DSH_VERSION_DEFAULT} bash setup.sh"
+  fi
+fi
+
+# ------------------------------------------------- 3.2 原生插件 android 补齐
+# 0.1.7 起上游新增原生插件 node-addon-require-builtin（被 dsh-app-boot 的
+# internalModules() 以**裸 require** 加载，没有 try/catch，缺它整个 dsh 起不来）。
+# 它的预编译平台包只有 darwin/linux/win32，没有 android；npm 上的对应平台包 404，
+# 且发布包不含源码（files 仅 lib/，无 src/、无 binding.gyp、无 repository），
+# 因此无法像 node-addon-system 那样自行编译。
+#
+# 替代方案：放一个 JS 假包。原生绑定唯一的实际用途就是取 Node 内部模块，而这在
+# --expose-internals 下用 require 就能做到——第 6 步生成的包装脚本本来就带该参数
+# （HMR 也需要）。假包源码在 patches/android-shim/，内含完整说明与校验依据。
+#
+# 注意：它装在 node_modules 下，任何一次 npm install 都会把它当 extraneous 清掉，
+# 所以必须由本脚本在每次安装后重新放回。
+RB_BACKEND="$DSH_DIR/node_modules/node-addon-require-builtin"
+RB_SHIM_DST="$DSH_DIR/node_modules/node-addon-require-builtin-android-arm64"
+RB_SHIM_SRC="$SCRIPT_DIR/patches/android-shim/node-addon-require-builtin-android-arm64"
+if [ -d "$RB_BACKEND" ]; then
+  if [ -d "$RB_SHIM_DST" ]; then
+    ok "  node-addon-require-builtin 的 android 替代实现已就位"
+  elif [ -f "$RB_SHIM_SRC/index.js" ]; then
+    mkdir -p "$RB_SHIM_DST"
+    if cp "$RB_SHIM_SRC/index.js" "$RB_SHIM_SRC/package.json" "$RB_SHIM_DST/"; then
+      ok "  已放入 node-addon-require-builtin 的 android JS 替代实现（上游无 android 预编译）"
+    else
+      warn "  放入 android JS 替代实现失败；dsh 启动会报 No usable native binding"
+    fi
+  else
+    warn "  该版本需要 node-addon-require-builtin 的 android 替代实现，但缺少 $RB_SHIM_SRC"
+    warn "  dsh 启动将报：No usable native binding found for node-addon-require-builtin-android-arm64"
   fi
 fi
 
