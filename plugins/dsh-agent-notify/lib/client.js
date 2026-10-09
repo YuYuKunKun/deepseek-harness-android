@@ -434,6 +434,91 @@ window.__ModuleLoader__.load({
       return PENDING_LABELS[kind] || { title: '需要你的操作', kind: 'ask' }
     }
 
+    // ------------------------------------------------- pending interaction watcher
+    // 为什么需要这个组件：0.2.0 起 `pendingInteraction` **不再出现在 sessions.list 的快照里**
+    // （那些行的字段只有 id/displayTitle/running/retainedBy/blank/updatedAt/title/cwd/
+    // parentId/origin），它搬到了 dsh-client-ui-session 的 sessionStatus store。而该 store
+    // 只通过 render 的 root hook `useSessionStatus` 暴露 —— `slots.provideRoot()` 提供的
+    // hooks 是**组件作用域**的，非组件代码（本插件的 apply）拿不到，也没有公开的 store 访问器。
+    //
+    // 因此往 `shell.overlay` 注册一个**不渲染任何 UI** 的组件去取这个 hook。选它的理由：
+    //   · kind=list / scope=root → 可以附加自己的条目，不会顶掉别人；
+    //   · 其注册表文档明说「Deliberately generic and unowned by any feature … the
+    //     additive seat for a frame-wide surface of your own」；
+    //   · standardProps 里明确含 `useSessionStatus`。
+    let watchedPendingKey = null
+    let pendingWatcherActive = false
+    let warnedNoStatusHook = false
+
+    function sessionTitleOf(id) {
+      try {
+        const snap = ctxRef && ctxRef.sessions && ctxRef.sessions.list.getSnapshot()
+        const row = snap && snap.byId ? snap.byId[id] : null
+        return row && row.displayTitle ? row.displayTitle : ''
+      } catch (error) {
+        return ''
+      }
+    }
+
+    /** 把 selector 产出的字符串还原成 Map<sessionId, kind>。 */
+    function parsePendingKey(key) {
+      const out = new Map()
+      if (typeof key !== 'string' || key === '') return out
+      for (const part of key.split('\u0001')) {
+        const at = part.indexOf('\u0000')
+        if (at === -1) continue
+        out.set(part.slice(0, at), part.slice(at + 1))
+      }
+      return out
+    }
+
+    function onPendingKey(key) {
+      pendingWatcherActive = true
+      if (key === watchedPendingKey) return
+      const was = parsePendingKey(watchedPendingKey)
+      watchedPendingKey = key
+      const now = parsePendingKey(key)
+      for (const [id, kind] of now) {
+        if (was.get(id) === kind) continue
+        // 首次观测（页面加载 / 重连后）若已有会话在等待用户，同样提醒 ——
+        // 一个没人回答的问题不该被基线悄悄吞掉（与旧逻辑的取舍一致）。
+        const info = pendingInfo(kind)
+        sendSystemNotification(info.kind, info.title, sessionTitleOf(id) || id, id)
+      }
+    }
+
+    /**
+     * 无 UI 组件：唯一职责是拿到 root hook `useSessionStatus` 并把变化转出来。
+     * selector 返回**字符串**而非对象，保证按值稳定比较，避免无谓重渲染。
+     */
+    function PendingWatcher(props) {
+      const useSessionStatus = props && props.useSessionStatus
+      if (typeof useSessionStatus !== 'function' && !warnedNoStatusHook) {
+        warnedNoStatusHook = true
+        // 说明 shell.overlay 没有把 useSessionStatus 下发下来（契约变了或该插槽未挂载）
+        console.warn(
+          '[dsh-agent-notify] shell.overlay 未提供 useSessionStatus，「需要你输入」提醒将不可用；props =',
+          Object.keys(props || {}),
+        )
+      }
+      let key = ''
+      if (typeof useSessionStatus === 'function') {
+        key = useSessionStatus((snapshot) => {
+          const parts = []
+          try {
+            for (const [id, status] of snapshot) {
+              const pending = status && status.pendingInteraction
+              if (pending) parts.push(id + '\u0000' + String(pending.kind))
+            }
+          } catch (error) { /* ignore */ }
+          parts.sort()
+          return parts.join('\u0001')
+        })
+      }
+      React.useEffect(() => { onPendingKey(key) }, [key])
+      return null
+    }
+
     function lastAssistantText(sessionId) {
       try {
         const sessions = ctxRef && ctxRef.sessions
@@ -478,7 +563,10 @@ window.__ModuleLoader__.load({
           }
           const was = prevStates.get(id)
           const nowRunning = summary.running === true
-          const nowPending = summary.pendingInteraction
+          // 0.2.0 起 sessions.list 快照里不再有 pendingInteraction（搬到 sessionStatus
+          // store，由 PendingWatcher 通过 root hook 观测）。只有在 watcher 尚未接管时
+          // 才读这个旧字段，用于兼容旧版 dsh —— 否则会与 watcher 重复通知。
+          const nowPending = pendingWatcherActive ? undefined : summary.pendingInteraction
           if (was === undefined) {
             // First sighting (page load / reconnect baseline): record it and
             // never replay a finish. A session that appears already waiting on
@@ -571,6 +659,26 @@ window.__ModuleLoader__.load({
         } else {
           console.warn('[dsh-agent-notify] slots service unavailable; settings section not registered')
         }
+        // shell.overlay：挂一个无 UI 组件以取得 root hook `useSessionStatus`，
+        // 这是 0.2.0 起拿到 pendingInteraction 的唯一公开途径（详见 PendingWatcher 注释）。
+        if (ctx.slots && typeof ctx.slots.register === 'function') {
+          const registerPendingWatcher = () =>
+            ctx.slots.register({
+              name: 'shell.overlay',
+              id: 'agent-notify.pending-watcher',
+              order: 999, // 渲染顺序无关紧要（返回 null），放最后避免影响他人
+            }, PendingWatcher)
+          try {
+            if (typeof ctx.slots.inject === 'function') {
+              ctx.slots.inject('shell.overlay', registerPendingWatcher)
+            } else {
+              ctx.effect(() => registerPendingWatcher(), 'agent-notify: pending watcher')
+            }
+          } catch (error) {
+            console.warn('[dsh-agent-notify] pending watcher registration failed (需要你输入的提醒将不可用):', error)
+          }
+        }
+
         // Establish the baseline once services are ready.
         handleListChange()
 

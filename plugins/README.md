@@ -116,6 +116,71 @@ cache-control: no-cache, no-store, must-revalidate
 > `127.0.0.1` 被浏览器视为安全上下文，而局域网 IP（`http://192.168.x.x:3080`）**不是**——
 > 那种情况下 SW 无法注册，只能退回会抛错的构造器。dsh 本身也只监听 127.0.0.1，故正常用法下无此问题。
 
+### 改动四：`pendingInteraction` 搬家了——「需要你输入」提醒失效的修复
+
+**症状**：任务完成的通知正常，但 agent 中途弹出的**选择框 / 批准 / 计划审阅**没有任何提醒。
+
+**根因**：插件从 `ctx.sessions.list.getSnapshot().byId[id].pendingInteraction` 读这个状态，
+但 0.2.0 起该字段**已不在会话列表快照里**。实测该快照每行的字段只有：
+
+```js
+{ id, displayTitle, running, retainedBy, blank, updatedAt,
+  projectionValues?, title?, cwd?, parentId?, origin? }
+```
+
+`pendingInteraction` 搬到了 `dsh-client-ui-session` 的 **sessionStatus store**。而那个 store
+**只通过 render 的 root hook `useSessionStatus` 暴露** —— `slots.provideRoot()` 提供的 hooks 是
+**组件作用域**的，非组件代码（插件的 `apply`）拿不到，也没有公开的 store 访问器。
+所以「任务完成」照常工作（它用 `running`，仍在快照里），只有 pending 那条路径永远读到 `undefined`。
+
+**做法**：往 **`shell.overlay`** 注册一个**不渲染任何 UI** 的组件，借此取得 root hook。
+选这个插槽的理由（都可在 dsh 自带的插槽注册表里核对）：
+
+- `kind=list` / `scope=root` → 能附加自己的条目，不会顶掉别人
+- 文档原文：*"Deliberately generic and unowned by any feature … This is the additive seat for a
+  frame-wide surface of your own"*
+- 它的 `standardProps` 里明确列有 `useSessionStatus: UseSessionStatus`
+
+```js
+// 无 UI 观察器：selector 返回**字符串**（而非对象），保证按值稳定比较、避免无谓重渲染
+function PendingWatcher(props) {
+  const useSessionStatus = props && props.useSessionStatus
+  let key = ''
+  if (typeof useSessionStatus === 'function') {
+    key = useSessionStatus((snapshot) => {
+      const parts = []
+      for (const [id, status] of snapshot) {
+        const pending = status && status.pendingInteraction
+        if (pending) parts.push(id + '\u0000' + String(pending.kind))
+      }
+      parts.sort()
+      return parts.join('\u0001')
+    })
+  }
+  React.useEffect(() => { onPendingKey(key) }, [key])
+  return null
+}
+// 注册（同样必须走 inject 等插槽声明）
+ctx.slots.inject('shell.overlay', () => ctx.slots.register(
+  { name: 'shell.overlay', id: 'agent-notify.pending-watcher', order: 999 }, PendingWatcher))
+```
+
+旧的 `summary.pendingInteraction` 读取被保留为**兜底**，仅在观察器尚未接管时生效
+（`pendingWatcherActive` 标志），这样旧版 dsh 行为不变、新版也不会重复通知。
+
+**验证**（复刻真实 slots 惰性声明语义 + React `useEffect` + SW 通知捕获，11 项断言全过）：
+
+| 场景 | 期望 | 结果 |
+|---|---|---|
+| s1 出现待回答 | 1 条「需要你的回答」，带 sessionId | ✅ |
+| 同一状态重复渲染 | 不重复通知 | ✅ |
+| s1 已答、s2 待批准 | 新增「需要你的批准」 | ✅ |
+| s2 类型变为计划审阅 | 新增「请审阅计划」 | ✅ |
+| 未知类型 | 回退「需要你的操作」 | ✅ |
+
+若某天 `shell.overlay` 不再下发该 hook，浏览器控制台会打印
+`shell.overlay 未提供 useSessionStatus …` 并附带实际 props 键名，便于定位。
+
 ### 安装（本地目录，pnpm `link:`）
 
 ```bash
