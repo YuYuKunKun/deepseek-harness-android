@@ -1,0 +1,62 @@
+{
+  "name": "dsh-agent-notify",
+  "description": "DSH Web GUI 任务完成通知：agent 完成任务或需要你输入/批准时，弹出 Windows 系统级通知（浏览器 Notification API，无网页内弹窗、无合成音），点击气泡直达会话。纯浏览器端插件（host half 为空）。",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "author": "chidaic",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chidaic/dsh-agent-notify.git"
+  },
+  "homepage": "https://github.com/chidaic/dsh-agent-notify",
+  "bugs": {
+    "url": "https://github.com/chidaic/dsh-agent-notify/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "notification",
+    "notify",
+    "windows",
+    "toast",
+    "web"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node test/client.test.cjs && node test/card.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

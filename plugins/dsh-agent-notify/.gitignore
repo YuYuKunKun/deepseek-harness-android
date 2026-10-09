@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# logs
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# test / coverage
+coverage/
+.nyc_output/
+
+# npm pack artifacts
+*.tgz
