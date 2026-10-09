@@ -530,6 +530,20 @@ elif [ ! -d "$SCRIPT_DIR/plugins/dsh-agent-notify" ]; then
 else
   info "7.1 安装插件 dsh-agent-notify"
   PROFILE_DIR="$HOME/.dsh/profiles/web"
+  # dsh plugin 把参数转发给 pnpm，而 dsh **不自带** pnpm —— 缺了它就直接报
+  #   dsh: pnpm was not found; install pnpm and make it available on PATH.
+  # （dsh/lib/plugin-*.js 按 exitCode 127 判定）。真机 .170 正是栽在这里：
+  # 插件文件拷过去了，却因为 profile 环境里没有 pnpm 而装不进 profile。
+  # pnpm 是纯 JS 包，装它不需要编译。
+  if ! command -v pnpm >/dev/null 2>&1; then
+    info "    未找到 pnpm（dsh plugin 需要），尝试 npm install -g pnpm"
+    if npm install -g pnpm >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then
+      ok "    已安装 pnpm $(pnpm -v 2>/dev/null)"
+    else
+      warn "    pnpm 安装失败 —— 插件无法自动装入"
+      warn "    可手动执行 npm install -g pnpm 后重跑本脚本"
+    fi
+  fi
   # ⚠️ 必须先让 dsh 自己初始化 profile：
   # dsh 只在 package.json **不存在**时才写入默认 bundles（lib/plugin-*.js 的 initProfile 分支，
   # web 模板 = dsh-base + dsh-web-app）。若让 pnpm 先建出 package.json，dsh 之后就再也不会补

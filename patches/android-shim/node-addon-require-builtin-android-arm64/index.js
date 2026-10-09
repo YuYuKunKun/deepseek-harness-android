@@ -23,11 +23,22 @@
  *   backend 必须是 'napi' | 'nodeabi'；abi 必须精确等于 buildAbiTag(backend, ...)，
  *   对 nodeabi 即 `node-v${process.versions.modules}`（运行时取值，不能硬编码）。
  */
+/**
+ * ⚠️ 这四个字段必须通过加载器的严格校验，改任何一个都可能让 dsh 起不来：
+ *   · mode / product / backend / abi 都必须是字符串；
+ *   · product 必须等于加载器 productForPackage() 从包名推出的值 —— 即 'require-builtin'
+ *     （由 'node-addon-require-builtin' 去掉 'node-addon-' 前缀得到）。
+ *     这一条是 node-addon-native-custom-loader **0.1.9 才加**的（0.1.6 只查 mode/backend/abi）。
+ *     真机 .170 装到 0.1.9 后即因此报：
+ *       native binding product mismatch: expected require-builtin, got dsh-android
+ *   · backend 必须是 'napi' | 'nodeabi'；abi 必须精确等于 buildAbiTag(backend, …)，
+ *     对 nodeabi 即 `node-v${process.versions.modules}`（运行时取值，不能硬编码）。
+ */
 const info = Object.freeze({
   mode: 'js-shim',
+  product: 'require-builtin',
   backend: 'nodeabi',
   abi: `node-v${process.versions.modules}`,
-  product: 'dsh-android',
 });
 
 module.exports = {
