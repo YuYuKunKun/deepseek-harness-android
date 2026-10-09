@@ -61,4 +61,5 @@ dsh plugin --profile web add dsh-web-mobile
 dsh plugin --profile web add github:mexiaosqwq/dsh-web-mobile
 ```
 
-> 若 `plugins/dsh-web-mobile/` 出现在工作区里，那只是本地用来比对的 clone，未纳入版本控制。
+> 本仓库**不保存它的源码副本**。早期为比对曾在 `plugins/dsh-web-mobile/` 放过一份 clone，
+> 已删除——需要看源码时按上面的仓库地址自行 clone 即可。
