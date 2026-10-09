@@ -94,6 +94,7 @@ bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token �
 | sharp 无法加载 | `Could not load sharp module` | 安装 `@img/sharp-wasm32` wasm 回退 |
 | HMR 启动崩溃 | `--expose-internals is required` | 包装脚本加 `--expose-internals` |
 | 启动报原生绑定缺失（0.1.7+） | `No usable native binding found for node-addon-require-builtin-android-arm64` | 上游该插件无 android 预编译、发布包也无源码 → `setup.sh` 第 3.2 步自动放入 JS 替代实现（`patches/android-shim/`，用 `require` 取同一批 Node 内部模块） |
+| dsh「跑一阵就没了」，日志无任何痕迹 | 进程凭空消失，日志停在正常运行处 | 启动它的 Termux 会话被回收，dsh 随**进程组**一起被带走（`nohup` 只挡 SIGHUP，挡不住）→ `start_dsh.sh` 改由 `setsid` 以**独立会话**拉起 `dsh-supervise.sh`（PPID=1、SID 与启动 shell 不同），并调用 `termux-wake-lock`；监督进程 `wait` 后把退出码写进 `mem-<时间戳>.log`，**`rc=137` 即被系统回收** |
 | bash 工具不可用 | `SANDBOX_UNAVAILABLE` | 权限模式设 `danger-full-access` |
 | 前端不适配竖屏 | 桌面布局、触控目标小等 | `apply-frontend.sh` 注入移动端 CSS/JS |
 | 软键盘遮挡输入框 | 输入法弹出后输入框被键盘盖住 | `visualViewport` 跟随：键盘弹出时整页（含输入框）抬到键盘上方，收回时还原 |
@@ -112,6 +113,13 @@ bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token �
 ### 六、常见问题
 
 - **页面白屏/打不开**：确认在 Termux 环境；看日志 `~/dsh/storage/dsh.log`。
+- **dsh「跑一阵就没了」，且日志里毫无痕迹**：这是本项目实测到的最难查的一类问题，原因不在 dsh 本身，而是**启动它的那个 Termux 会话被回收**——内核按进程组回收，dsh 因为在同一进程组里被一起带走，所以什么都来不及写。仅靠 `nohup` 挡不住（它只挡 `SIGHUP`）。
+  现在的 `start_dsh.sh` 已修好，三件事一起做：
+  1. **`setsid` 独立会话**：dsh 由 `dsh-supervise.sh` 以新会话（无控制终端）拉起，`PPID` 变为 1，不再属于任何 Termux 会话的进程组。可用 `ps -o pid,ppid,sid,comm | grep dsh` 核对它的 `SID` 与你当前 shell 不同。
+  2. **唤醒锁**：启动时调用 `termux-wake-lock`（需 Termux:API 应用 + `pkg install termux-api`），`stop_dsh.sh` 会 `termux-wake-unlock` 释放。另建议在系统设置里为 Termux **关闭电池优化**（一加/OPPO 等 ROM 尤其激进）。
+  3. **退出原因可见**：`dsh-supervise.sh` 会 `wait` 子进程并把退出码写进 `~/dsh/storage/logs/mem-<时间戳>.log`。**`rc=137`（被信号 9）就是被系统回收**，`rc=143` 是 SIGTERM；注意 dsh 自己注册了 SIGTERM 处理器，所以 `kill -TERM` 通常记成 `rc=0`，别误读成"正常结束"。
+
+  日志布局：每次启动写 `~/dsh/storage/logs/dsh-<时间戳>.log`（保留最近 10 份），`~/dsh/storage/dsh.log` 是指向最新一份的软链接（旧的取 token 逻辑仍可用）；`mem-<时间戳>.log` 每分钟一条内存/swap/`dsh_rss` 采样，用于区分"内存涨爆"还是"被外力干掉"。
 - **`AbortSignal.any is not a function`**：浏览器过旧，`apply-frontend.sh` 已注入 polyfill。
 - **`crypto.randomUUID is not a function`**：局域网 HTTP 或旧版 WebView 不暴露该 API，`apply-frontend.sh` 已注入安全随机 UUID v4 回退。
 - **模型没反应**：检查 Models 页 API Key 与 `~/.dsh/.credentials.yaml`。
@@ -206,6 +214,7 @@ The whitelist and default live in `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT`
 | sharp fails to load | `Could not load sharp module` | install `@img/sharp-wasm32` wasm fallback |
 | HMR crashes on start | `--expose-internals is required` | wrapper script adds `--expose-internals` |
 | Startup: missing native binding (0.1.7+) | `No usable native binding found for node-addon-require-builtin-android-arm64` | upstream ships no android prebuild and no source for that addon → `setup.sh` step 3.2 installs a JS replacement (`patches/android-shim/`) that reaches the same Node internal modules via `require` |
+| dsh vanishes after a while, log shows nothing | process just disappears; log stops mid-normal-output | the Termux session that launched it gets reaped and dsh is taken down with the **process group** (`nohup` only blocks SIGHUP) → `start_dsh.sh` now launches `dsh-supervise.sh` via `setsid` in its **own session** (PPID=1, SID differs from the launching shell) and calls `termux-wake-lock`; the supervisor `wait`s and records the exit code into `mem-<stamp>.log` — **`rc=137` means reaped by the system** |
 | bash tool unavailable | `SANDBOX_UNAVAILABLE` | permission mode `danger-full-access` |
 | Frontend not mobile-ready | desktop layout, small touch targets | `apply-frontend.sh` injects mobile CSS/JS |
 | Soft keyboard covers the input | input box hidden behind the IME when it opens | `visualViewport`-driven follow: page (incl. input) lifts above the keyboard on open, restores on close |

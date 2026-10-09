@@ -486,6 +486,13 @@ mkdir -p "$INSTALL_DIR/storage"
 cp "$SCRIPT_DIR/start_dsh.sh" "$INSTALL_DIR/start_dsh.sh"
 cp "$SCRIPT_DIR/stop_dsh.sh"  "$INSTALL_DIR/stop_dsh.sh"
 chmod +x "$INSTALL_DIR/start_dsh.sh" "$INSTALL_DIR/stop_dsh.sh"
+# dsh-supervise.sh：start_dsh.sh 用 setsid 以**独立会话**拉起它，再由它启动 dsh。
+# 这样 dsh 才不会随启动它的 Termux 会话被一起按进程组回收，同时它负责记录 dsh 的
+# 真实退出码/终止信号（旧脚本缺这条信息，导致"跑一阵就没了"查不到原因）。
+if [ -f "$SCRIPT_DIR/dsh-supervise.sh" ]; then
+  cp "$SCRIPT_DIR/dsh-supervise.sh" "$INSTALL_DIR/dsh-supervise.sh"
+  chmod +x "$INSTALL_DIR/dsh-supervise.sh"
+fi
 # restart_dsh_now.sh 供补丁后重启用；它的输出里会打印带 token 的 Web UI URL。
 if [ -f "$SCRIPT_DIR/restart_dsh_now.sh" ]; then
   cp "$SCRIPT_DIR/restart_dsh_now.sh" "$INSTALL_DIR/restart_dsh_now.sh"
