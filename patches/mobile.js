@@ -297,3 +297,68 @@ if (typeof AbortSignal !== "undefined" && !AbortSignal.any) {
   window.addEventListener("resize", schedule);
   sync();
 })();
+
+/* ---- 9) 附件入口：让 Android 上的文件输入走「文档选择器」----
+ * 背景（.157 真机探针页 A/B/C 对比实测）：
+ *   · accept 缺省、或无意义通配、或含 image 类型  → Chrome(Android 14+) 走**媒体选择器**，
+ *     只有「相机 / 摄像机 / 照片和视频」，「更多」里也没有文件管理器 → PDF/文档选不到；
+ *   · accept 为**纯非媒体类型**                    → 走**文档选择器**，而且 Android 不过滤类型，
+ *     实测任意文件都能选（与 StackOverflow 上"Chrome Android 忽略 accept 过滤"一致）；
+ *   · multiple 不是变量（单个 / 多个结果完全相同）。
+ * 处置：仅在 Android 上，给 composer 里**没有 accept** 的 file input 补一组非媒体类型。
+ *   ⚠️ 这组类型里**绝不能出现 image 类型** —— 一含就退回媒体选择器（实测）。
+ *   ⚠️ 宿主不按 MIME 校验（onPickFiles 只做 intakeFiles(picked)），所以补 accept 不会
+ *      导致文件被前端拒收；图片依旧能在文档选择器里选到（它通常自带「图片」入口）。
+ *   ⚠️ 只补没有 accept 的输入；已有 accept 的一律不动。
+ *   ⚠️ 桌面端不受影响：既有的 accept 不动，且本段只在 Android UA 下执行。
+ * 代价（已知并接受）：失去相册 / 相机的快捷入口，改从文档选择器里翻。
+ * 性能：DOM 变动频繁（流式消息），用 requestAnimationFrame 去抖，每帧最多全量扫一次。 */
+(function () {
+  if (typeof navigator === "undefined" || !/Android/i.test(navigator.userAgent || "")) return;
+
+  /* 纯非媒体类型。Android 不过滤，这里主要是"声明意图"用；关键是别混进 image / video。 */
+  var DOC_ACCEPT = [
+    "application/pdf", "application/zip", "application/json", "application/xml",
+    ".pdf", ".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".ini", ".conf", ".toml",
+    ".zip", ".gz", ".tar", ".7z", ".rar",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
+    ".apk", ".epub", ".sql", ".sh", ".py", ".js", ".ts", ".html", ".css"
+  ].join(",");
+
+  function fix(el) {
+    try {
+      if (!el || el.tagName !== "INPUT" || el.type !== "file") return;
+      if (el.hasAttribute("accept")) return;   /* 已有 accept：尊重原意 */
+      el.setAttribute("accept", DOC_ACCEPT);
+    } catch (e) {}
+  }
+
+  function sweep(root) {
+    try {
+      if (!root || !root.querySelectorAll) return;
+      var list = root.querySelectorAll('input[type="file"]');
+      for (var i = 0; i < list.length; i++) fix(list[i]);
+      if (root.tagName === "INPUT") fix(root);
+    } catch (e) {}
+  }
+
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; sweep(document); });
+  }
+
+  function start() {
+    sweep(document);
+    if (typeof MutationObserver === "undefined") return;
+    try {
+      new MutationObserver(schedule).observe(document.documentElement || document, {
+        childList: true, subtree: true
+      });
+    } catch (e) {}
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
+})();

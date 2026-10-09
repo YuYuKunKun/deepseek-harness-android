@@ -123,22 +123,27 @@ bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token �
 - **`AbortSignal.any is not a function`**：浏览器过旧，`apply-frontend.sh` 已注入 polyfill。
 - **`crypto.randomUUID is not a function`**：局域网 HTTP 或旧版 WebView 不暴露该 API，`apply-frontend.sh` 已注入安全随机 UUID v4 回退。
 - **模型没反应**：检查 Models 页 API Key 与 `~/.dsh/.credentials.yaml`。
-- **点附件时选择器只有「相机 / 摄像机 / 照片和视频」，选不到 PDF/文档**：这是**设备侧**问题，不是 dsh 的。
-  dsh 的 composer 用的是 `type="file" multiple`（**没有 `accept`**，全树搜 `image/*` 只有文档预览包那一处），
-  所以应用层没有任何图片限制；`accept` 也改不动它（真机实测给通配、给文档类型都与不给完全一样）。
-  根因是**系统的文件选择器被 ROM 移除了**——本机 `pm list packages -u` 里能看到
-  `com.android.documentsui`，但它不在已安装/已启用列表里（国产 ROM 常见：卸掉 AOSP 文档选择器换成自家实现）。
-  于是 `am start -a android.intent.action.GET_CONTENT -t '*'` 直接报 `unable to resolve Intent`，
-  Chrome 的选择器自然只能列出相机与相册。
+- **点附件时选择器只有「相机 / 摄像机 / 照片和视频」，选不到 PDF/文档**：根因是
+  **Chrome(Android 14+) 按 `accept` 决定走哪个系统选择器**。.157 真机探针页 A/B/C 实测：
 
-  两条修法：
-  1. **装一个文件管理器**（最省事）：任何声明了 `GET_CONTENT`/`OPEN_DOCUMENT` 的文件管理器（如 Material Files、
-     Google「文件」）装上后就会出现在选择器里，"更多" 里随即有文件入口，此后 dsh 附件可任意类型。
-  2. **恢复系统自带的**：需要 adb（PC + USB 调试）执行 `adb shell pm install-existing com.android.documentsui`；
-     或到「设置 → 应用 → 显示系统应用」里找「文件 / Documents UI」看能否启用。
+  | 输入 | 结果 |
+  |---|---|
+  | `type="file" multiple`（无 accept，**即 dsh 现状**） | 媒体选择器：只有相机 / 摄像机 / 照片和视频 |
+  | `type="file"`（只去掉 multiple） | **与上面完全相同** → `multiple` 不是变量 |
+  | `accept` 为**纯非媒体类型** | **文档选择器，且 Android 不过滤类型**，任意文件都能选 |
 
-  诊断结论均来自真机取证：`accept` 通配无效、⑤（`image/*`）行为不同说明 `accept` 确实生效但只是换不出文件管理器、
-  `GET_CONTENT` 无处理者、`documentsui` 只在 `-u` 列表里。
+  （Android 忽略 `accept` 过滤这一点，与 StackOverflow 上 `accept=".pdf"` 在 Chrome Android 上
+  反而什么都能选的现象一致。）
+
+  修法：`patches/mobile.js` 第 9 节在 **Android 上**给 composer 里没有 `accept` 的 file input
+  补一组**纯非媒体类型**。⚠️ 这组类型里**绝不能含 image**，一含就退回媒体选择器（实测）。
+  代价：失去相册 / 相机的快捷入口，改从文档选择器里选图片（它通常自带「图片」入口）。
+  宿主不按 MIME 校验（`onPickFiles` 只做 `intakeFiles(picked)`），所以补 accept 不会让文件被前端拒收。
+  桌面端不受影响（已有的 `accept` 一律不动，且该段只在 Android UA 下执行）。
+
+  > 排查中我曾用 `am start -a android.intent.action.GET_CONTENT -t '*'` 得到 `unable to resolve Intent`，
+  > 据此误判为「ROM 移除了系统选择器」——**那是错的**：`'*'` 不是合法的通配 MIME，必须写 `'*/*'`。
+  > 用 `'*/*'` 时系统正常弹出文件选择器。
 - **换机/重装**：重跑 `bash setup.sh`。
 
 ### 七、作者测试环境与兼容性
@@ -252,13 +257,20 @@ The whitelist and default live in `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT`
 - **`AbortSignal.any is not a function`**: old browser; `apply-frontend.sh` injects a polyfill.
 - **`crypto.randomUUID is not a function`**: LAN HTTP and older WebViews may not expose the API; `apply-frontend.sh` injects a secure UUID v4 fallback.
 - **Model not responding**: check the API Key in Models page and `~/.dsh/.credentials.yaml`.
-- **The file chooser only offers “Camera / Camcorder / Photos & videos” — no PDF or documents**: this is a **device-side** problem, not dsh's. The composer uses `type="file" multiple` with **no `accept`** (the only `image/*` in the whole tree belongs to the document-preview package), so the app imposes no image restriction — and an `accept` cannot change it either: on-device tests showed that a wildcard accept, an accept listing document types, and no accept at all behave identically. The root cause is that the **system document picker has been removed by the ROM**: `pm list packages -u` reveals `com.android.documentsui`, yet it is absent from the installed/enabled lists (common on Chinese ROMs, which drop the AOSP picker for their own). Consequently `am start -a android.intent.action.GET_CONTENT -t '*'` fails with `unable to resolve Intent`, so Chrome's chooser can only list the camera and gallery apps.
+- **The file chooser only offers “Camera / Camcorder / Photos & videos” — no PDF or documents**: the cause is that **Chrome (Android 14+) picks the system chooser based on `accept`**. Measured on-device (.157) with an A/B/C probe page:
 
-  Two fixes:
-  1. **Install a file manager** (easiest): any file manager that declares `GET_CONTENT`/`OPEN_DOCUMENT` (e.g. Material Files, Google Files) will then appear in the chooser, a file entry shows up under “More”, and dsh attachments accept any type.
-  2. **Restore the built-in one**: needs adb (PC + USB debugging) — `adb shell pm install-existing com.android.documentsui`; or look for “Files / Documents UI” under Settings → Apps → show system apps and see whether it can be enabled.
+  | Input | Result |
+  |---|---|
+  | `type="file" multiple` (no accept — **what dsh uses**) | media chooser: camera / camcorder / photos only |
+  | `type="file"` (single, only `multiple` removed) | **identical** → `multiple` is not the variable |
+  | `accept` with **purely non-media types** | **document chooser**, and Android **does not filter by type** — any file is selectable |
 
-  All of the above was established on-device: the wildcard `accept` had no effect, test ⑤ (`image/*`) behaved differently (so `accept` does take effect, it just cannot summon a picker that isn't installed), `GET_CONTENT` has no resolver, and `documentsui` appears only in the `-u` listing.
+  (Android ignoring the `accept` filter matches the well-known StackOverflow report where `accept=".pdf"` lets Chrome on Android pick anything.)
+
+  Fix: section 9 of `patches/mobile.js` gives composer file inputs that have **no** `accept` a set of **purely non-media** types, **on Android only**. ⚠️ That set must **never contain an image type** — adding one switches the chooser back to media (measured). Trade-off: the gallery/camera shortcut is gone; images are picked from the document chooser instead (it usually ships an “Images” entry). The host does not validate MIME (`onPickFiles` just calls `intakeFiles(picked)`), so adding `accept` cannot cause a front-end rejection. Desktop is unaffected (existing `accept` values are never touched, and the block only runs under an Android UA).
+
+  > While investigating I ran `am start -a android.intent.action.GET_CONTENT -t '*'`, got `unable to resolve Intent`, and wrongly concluded that “the ROM removed the system picker”. That was a mistake: `'*'` is not a valid wildcard MIME — it must be `'*/*'`, which opens the file picker normally.
+
 - **Reinstall / new device**: re-run `bash setup.sh`.
 
 ### 7. Author's test environment & compatibility
