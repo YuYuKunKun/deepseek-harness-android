@@ -329,9 +329,11 @@ print("  patched attachment-local (link→rename)")
 PY
 fi
 
-# 4e: 无硬链接 no-replace 发布 + 附件祖先遍历/清理容忍
-#     （write 工具新建文件 / 附件保存，同 4a/4b 的 link→rename 一族的 Android EACCES 修复，
-#       幂等；基于 dsh 0.1.0-rc.3/rc.6 均可。详见 patches/patch-dsh-android-link.js）
+# 4e: 无硬链接 no-replace 发布 + 附件发布硬链接回落 + 祖先遍历/清理容忍
+#     （write 工具新建文件 / 附件保存/上传，同 4a/4b 的 link→rename 一族的 Android EACCES 修复，
+#       幂等，自动适配新旧形态。0.1.5+ 的附件发布有两处裸 link()，硬链接被禁时报
+#       ATTACHMENT_WRITE_FAILED（上传图片失败），脚本会换成 linkOrCopyExclusive。
+#       详见 patches/patch-dsh-android-link.js）
 HLFIX="$SCRIPT_DIR/patches/patch-dsh-android-link.js"
 if [ -f "$HLFIX" ]; then
   if node "$HLFIX" --root "$DSH_DIR/node_modules/@deepseek-ai"; then

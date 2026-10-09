@@ -11,13 +11,19 @@
  * 的路径都会因此失败：
  *
  *   1. dsh-session-persistence-jsonl/lib/index.js —— 会话日志发布（旧版 dsh，rc.6 已改为 rename）
- *   2. dsh-attachment-local/lib/index.js           —— 附件内容寻址去重（rc.6 已改为 rename）
- *   3. dsh-fs-local/lib/index.js                   —— write 工具“新建文件”（createIfAbsent 分支，rc.6 仍未修）
+ *   2. dsh-attachment-local/lib/index.js           —— 附件发布（内容寻址别名 / 无覆盖发布）
+ *   3. dsh-fs-local/lib/index.js                   —— write 工具"新建文件"（createIfAbsent 分支，rc.6 仍未修）
  *
  * 本脚本对三处做版本兼容、幂等的就地修补：
- *   - 1、2：link(...) -> rename(...)（与 rc.6 的上游修复一致），并同步修正 node:fs/promises 的导入；
- *   - 3：link 失败（EACCES/EPERM/EMLINK/ENOSYS/ENOTSUP）时回退到“无硬链接的 no-replace 发布”
- *        （O_EXCL 原子占位 + 同目录 rename 原子填充），保留“不覆盖已存在文件”的语义。
+ *   - 1：link(...) -> rename(...)（与 rc.6 的上游修复一致），并同步修正 node:fs/promises 的导入；
+ *   - 2：分新旧两种形态
+ *        · 0.1.0-rc.x：link(temporary, target) -> rename(...)
+ *        · 0.1.5+ / 0.2.x：两处裸 link()（publishImmutableAlias 的 link(source, target)、
+ *          publishStagedObject 的 link(staged.path, target)）→ 换成 linkOrCopyExclusive()，
+ *          硬链接不可用时回落 copyFile(..., COPYFILE_EXCL) —— 它同样在目标已存在时抛 EEXIST，
+ *          完整保留"no-replace + 并发竞争校验"语义（别名场景的 source 必须继续存在，不能 rename）
+ *   - 3：link 失败（EACCES/EPERM/EMLINK/ENOSYS/ENOTSUP）时回退到"无硬链接的 no-replace 发布"
+ *        （O_EXCL 原子占位 + 同目录 rename 原子填充），保留"不覆盖已存在文件"的语义。
  *
  * 用法：
  *   node patch-dsh-android-link.js [--root <@deepseek-ai 包目录>]
@@ -77,6 +83,55 @@ const FALLBACK_HELPERS = [
 	"}",
 ].join("\n");
 
+/** 确保 node:fs/promises 的导入里有 copyFile（保留 link —— 新回落实现仍会先试 link）。 */
+function ensureFsPromisesCopyFile(src) {
+	return src.replace(/^(import \{)([^}]*)(\} from "node:fs\/promises";)$/m, (whole, pre, body, post) => {
+		const names = body.split(",").map((s) => s.trim()).filter(Boolean);
+		if (names.includes("copyFile")) return whole;
+		names.push("copyFile");
+		return pre + names.join(", ") + post;
+	});
+}
+
+/**
+ * 附件发布的硬链接回落（dsh 0.1.5+ / 0.2.x 形态）。
+ *
+ * 上游在 0.1.5 之后把附件发布重写成了两处 link()：
+ *   · publishImmutableAlias  —— 给已存在的不可变对象再挂一个硬链接名（内容寻址去重）
+ *   · publishStagedObject    —— 把暂存文件**不覆盖地**发布到目标
+ * 二者的错误处理都只把 EEXIST 视为可恢复（并发创建者抢先），其余一律上抛成
+ * ATTACHMENT_WRITE_FAILED。Android SELinux 全局禁硬链接，于是必失败。
+ *
+ * 回落用 copyFile(..., COPYFILE_EXCL)：它同样在目标已存在时抛 EEXIST，因此完整保留
+ * 「no-replace + 并发竞争校验」语义，代价只是失去去重的空间收益。正确性优先。
+ *
+ * 特别注意：别名场景下 source 必须继续存在，所以**不能**用 rename 回落（那会把源搬走）。
+ */
+const ATTACHMENT_HELPERS = [
+	"/** [dsh-android-link-fix] link(2) 被拒绝或不支持的错误码：Android SELinux 全局禁硬链接（EACCES），部分 FUSE 挂载未实现（ENOSYS/ENOTSUP）。 */",
+	"function isHardLinkUnavailable(error) {",
+	"\treturn error instanceof Error && typeof error.code === \"string\" && (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"EMLINK\" || error.code === \"ENOSYS\" || error.code === \"ENOTSUP\" || error.code === \"EOPNOTSUPP\");",
+	"}",
+	"/**",
+	" * [dsh-android-link-fix] 硬链接不可用时退回 copyFile(..., COPYFILE_EXCL)；目标已存在时同样抛 EEXIST，",
+	" * 交由调用方原有的并发竞争分支处理。source 不会被移动（别名场景要求它继续存在）。",
+	" */",
+	"async function linkOrCopyExclusive(source, target) {",
+	"\ttry {",
+	"\t\tawait link(source, target);",
+	"\t} catch (error) {",
+	"\t\tif (!isHardLinkUnavailable(error)) throw error;",
+	"\t\tawait copyFile(source, target, constants.COPYFILE_EXCL);",
+	"\t}",
+	"}",
+].join("\n");
+
+/** 新形态的两处 link 调用（缩进 3 个 tab），键为原样、值为替换后。 */
+const ATTACHMENT_LINK_CALLS = [
+	"\t\t\tawait link(source, target);",
+	"\t\t\tawait link(staged.path, target);",
+];
+
 const FALLBACK_BLOCK_NEW = [
 	"\t\tif (createIfAbsent !== void 0) try {",
 	"\t\t\tawait linkFile(tempPath, absolutePath);",
@@ -131,6 +186,27 @@ const PACKAGES = [
 			let out = src;
 			let changed = false;
 			const details = [];
+
+			// 新形态（0.1.5+ / 0.2.x）：两处裸 link() 硬链接调用 → 带回落的 linkOrCopyExclusive。
+			// 这是「图片发送失败（ATTACHMENT_WRITE_FAILED）」的直接原因，必须优先处理。
+			if (!out.includes("linkOrCopyExclusive")) {
+				const hits = ATTACHMENT_LINK_CALLS.filter((call) => out.includes(call));
+				if (hits.length > 0) {
+					for (const call of hits) {
+						out = out.replace(call, call.replace("await link(", "await linkOrCopyExclusive("));
+					}
+					const anchor = "async function syncDirectory(";
+					if (!out.includes(anchor)) {
+						return { status: "pattern-mismatch", detail: "找到附件 link() 调用但缺少插入锚点 async function syncDirectory(，请人工检查该文件" };
+					}
+					out = out.replace(anchor, ATTACHMENT_HELPERS + "\n\n" + anchor);
+					out = ensureFsPromisesCopyFile(out);
+					details.push(`附件硬链接回落到 copyFile(COPYFILE_EXCL)（${hits.length} 处：内容寻址别名 / 无覆盖发布）`);
+					changed = true;
+				}
+			}
+
+			// 旧形态（0.1.0-rc.x）：link(temporary, target) -> rename（与上游 rc.6 的修法一致）
 			const oldCall = "\t\t\tawait link(temporary, target);";
 			if (out.includes(oldCall)) {
 				out = out.replace(oldCall, "\t\t\tawait rename(temporary, target);");
@@ -138,6 +214,8 @@ const PACKAGES = [
 				details.push("附件去重发布 link -> rename");
 				changed = true;
 			}
+
+			// 祖先遍历容忍（新旧形态都保留）
 			const oldWalk = "\t\tawait syncDirectory(parent);";
 			if (out.includes(oldWalk) && !out.includes("syncDirectoryTolerant")) {
 				const anchor = "async function ensureDurableDirectory(";
@@ -158,7 +236,7 @@ const PACKAGES = [
 				details.push("发布后临时文件清理容忍 ENOENT");
 				changed = true;
 			}
-			if (!changed) return { status: "already-fixed", detail: "附件发布已用 rename 且祖先遍历已容忍（无需处理）" };
+			if (!changed) return { status: "already-fixed", detail: "附件发布已用 linkOrCopyExclusive 或 rename，且祖先遍历已容忍（无需处理）" };
 			return { status: "patched", detail: details.join("；"), src: out };
 		},
 	},
