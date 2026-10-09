@@ -60,24 +60,61 @@ ctx.slots.inject('settings.section', () => ctx.slots.register({ … }, SettingsC
 
 `inject` 会等插槽声明后再执行回调。
 
-### ⚠️ 移动端（Android Chrome）无法发系统通知
+### 改动三：自带 service worker，让移动端也能发系统通知
 
-**这一条不是插件的 bug，是平台限制**，两个叠加的原因：
+**问题**：`new Notification()` 在移动端浏览器会抛 `TypeError`——这是平台限制而非插件 bug。MDN 明确写道：
 
-1. **`new Notification()` 在移动端浏览器会抛 `TypeError`。** MDN 明确写道：
-   > This constructor throws a `TypeError` when called in nearly all mobile browsers. Instead, you need to register a service worker and use `ServiceWorkerRegistration.showNotification()`.
-   （见 [MDN: Notification() constructor](https://developer.mozilla.org/en-US/docs/Web/API/Notification/Notification)、[Chrome issue #481856](https://crbug.com/481856)）
-2. **替代路径也不存在**：`showNotification()` 需要 service worker，而 dsh 的前端**并未注册任何 service worker**
-   （`dsh-web-frontend/dist` 里 `serviceWorker` 出现 0 次）。
+> This constructor throws a `TypeError` when called in nearly all mobile browsers. Instead, you need to register a service worker and use `ServiceWorkerRegistration.showNotification()`.
 
-所以在手机上点击「发送测试通知」会得到一条明确说明，而**不是**静默失败：
+（见 [MDN: Notification() constructor](https://developer.mozilla.org/en-US/docs/Web/API/Notification/Notification)、[Chrome issue #481856](https://crbug.com/481856)）
 
-> 发送失败：本浏览器不支持 Notification 构造器。移动端只能靠 service worker 的 showNotification()
-> 发系统通知，而当前 dsh 没有注册 service worker —— 故在手机上无法发系统通知（与权限设置无关）。
+而唯一合规的替代路径本来也走不通：`showNotification()` 需要 service worker，但 **dsh 前端没有注册任何
+service worker**（`dsh-web-frontend/dist` 里 `serviceWorker` 出现 0 次）。
 
-即：**该插件的「系统级通知」能力实际上仅限桌面端 Chrome/Edge。** 想在 Android 上用，需要给 dsh
-补一个 service worker（可由插件的宿主半边注册 webServer 路由来提供，再用
-`registration.showNotification()` 发送）——那是一项独立改动，尚未实现。
+**做法**：插件自带一个 SW，分两半配合。
+
+| 半边 | 文件 | 职责 |
+|---|---|---|
+| 宿主 | `lib/index.js` | 用 `ctx.inject(['webServer'], …)` 注册一条 exact 路由 `/plugins/dsh-agent-notify/sw.js`，带 `Service-Worker-Allowed: /`（允许 scope `/`，必须控制 dsh 页面本身，点击通知才能 focus 回来）与 `Cache-Control: no-cache`（SW 靠字节比对更新，长缓存会让新版本永远装不上） |
+| SW | `lib/sw.js` | `install`→`skipWaiting()`、`activate`→`clients.claim()`、`notificationclick`→聚焦已有页面并 `postMessage` 回传 sessionId。**刻意不注册 fetch 处理函数**，不拦截、不缓存任何请求，对 dsh 正常运行零影响 |
+| 客户端 | `lib/client.js` | `apply` 时预注册（注册本身不弹权限框）并监听 SW 消息以打开会话；发通知时**移动端 UA 走 `registration.showNotification()`，桌面端保持原构造器路径不变**，SW 失败则回退构造器 |
+
+「移动端优先 SW、桌面端维持原状」是用 UA 判定而非试错实现的——试 `new Notification()` 会真的弹出一条通知。
+
+```js
+// 宿主：注册 SW 路由（注意必须用 inject，直接取 ctx.webServer 会抛
+// "cannot get property webServer without inject"）
+ctx.inject(['webServer'], registerServiceWorkerRoute)
+
+// 客户端：移动端走 SW，桌面端走构造器
+if (prefersServiceWorker() && serviceWorkerSupported()) {
+  showViaServiceWorker(title, body, sessionId).catch(() => viaConstructor())
+} else {
+  viaConstructor()
+}
+```
+
+**验证**（本机 + 真机对「服务端实际吐出的 bundle」各跑一遍）：
+
+```
+✅ factory 可加载 (v1.1.0)、无警告
+✅ 设置页注册条目 1 个
+✅ SW 注册成功 {"url":"/plugins/dsh-agent-notify/sw.js","opts":{"scope":"/"}}
+✅ SW 点击消息监听 已注册
+```
+
+服务端路由响应头实测：
+
+```
+HTTP/1.1 200 OK
+content-type: text/javascript; charset=utf-8
+service-worker-allowed: /
+cache-control: no-cache, no-store, must-revalidate
+```
+
+> ⚠️ **必须在 `http://127.0.0.1:3080` 下使用**。service worker 与通知 API 都要求**安全上下文**，
+> `127.0.0.1` 被浏览器视为安全上下文，而局域网 IP（`http://192.168.x.x:3080`）**不是**——
+> 那种情况下 SW 无法注册，只能退回会抛错的构造器。dsh 本身也只监听 127.0.0.1，故正常用法下无此问题。
 
 ### 安装（本地目录，pnpm `link:`）
 

@@ -41,7 +41,7 @@ window.__ModuleLoader__.load({
     var exports = module.exports
 
     /** Bump on every behavioral change; shown in the settings page for diagnosing stale bundles. */
-    const BUNDLE_VERSION = '1.0.7'
+    const BUNDLE_VERSION = '1.1.0'
     try {
       console.log('[dsh-agent-notify] bundle v' + BUNDLE_VERSION + ' loaded')
     } catch (error) { /* ignore */ }
@@ -146,6 +146,91 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ------------------------------------------------------------- service worker
+    // 移动端浏览器的 `new Notification()` 会抛 TypeError（MDN：throws a TypeError when
+    // called in nearly all mobile browsers；Chrome issue #481856），唯一可行路径是
+    // service worker 的 ServiceWorkerRegistration.showNotification()。dsh 前端不自带 SW，
+    // 故由本插件的**宿主半边**提供该文件（带 Service-Worker-Allowed: / 允许 scope "/"）。
+    const SW_URL = '/plugins/dsh-agent-notify/sw.js'
+    let swRegistration = null
+    let swPromise = null
+
+    function serviceWorkerSupported() {
+      return typeof navigator !== 'undefined' && !!navigator.serviceWorker
+    }
+
+    /** 注册（或复用）service worker。幂等：并发调用共享同一个 Promise。 */
+    function ensureServiceWorker() {
+      if (!serviceWorkerSupported()) return Promise.resolve(null)
+      if (swPromise) return swPromise
+      swPromise = (async () => {
+        try {
+          const existing = await navigator.serviceWorker.getRegistration()
+          if (existing) {
+            swRegistration = existing
+            return existing
+          }
+          const reg = await navigator.serviceWorker.register(SW_URL, { scope: '/' })
+          swRegistration = reg
+          return reg
+        } catch (error) {
+          console.warn('[dsh-agent-notify] service worker 注册失败:', error)
+          return null
+        }
+      })()
+      return swPromise
+    }
+
+    /** 打开会话（构造器点击与 SW 消息共用）。 */
+    function openSession(sessionId) {
+      if (!sessionId) return
+      try {
+        if (ctxRef && ctxRef.sessions && typeof ctxRef.sessions.open === 'function') {
+          ctxRef.sessions.open(sessionId)
+        }
+      } catch (error) { /* ignore */ }
+    }
+
+    /** 移动端必须走这里；桌面端同样可用（持久通知）。 */
+    async function showViaServiceWorker(title, body, sessionId) {
+      const reg = swRegistration || (await ensureServiceWorker())
+      if (!reg || typeof reg.showNotification !== 'function') return false
+      // 注册刚建立时可能还没有 active worker，此时 showNotification 会抛
+      if (!reg.active && navigator.serviceWorker.ready) {
+        try { await navigator.serviceWorker.ready } catch (error) { /* 交给下面处理 */ }
+      }
+      await reg.showNotification(title, {
+        body,
+        data: { sessionId: sessionId || null },
+        // 刻意不带 tag，理由同构造器路径：同 tag 会被静默更新而不重新弹出
+      })
+      return true
+    }
+
+    /** 桌面端原有路径（保持既有行为不变）。 */
+    function showViaConstructor(title, body, sessionId) {
+      const notification = new window.Notification(title, { body })
+      notification.onclick = () => {
+        try {
+          window.focus()
+          openSession(sessionId)
+        } catch (error) { /* ignore */ }
+        try { notification.close() } catch (error) { /* ignore */ }
+      }
+      return true
+    }
+
+    /**
+     * 是否优先走 service worker。
+     * 不能靠"试着 new 一下"来探测——那会真的弹出一条通知；故用平台特征判断：
+     * 移动端 UA 走 SW，桌面端保持构造器路径不变。
+     */
+    function prefersServiceWorker() {
+      if (typeof navigator === 'undefined') return false
+      const ua = navigator.userAgent || ''
+      return /Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(ua)
+    }
+
     /** Whether the current settings want a system notification for this event. */
     function shouldSendSystemNotification() {
       if (!settings.enabled) return false
@@ -156,68 +241,79 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Push a Windows/system-level notification (browser Notification API).
-     * Clicking it focuses the page and opens the owning session.
+     * Push a system-level notification.
+     * 桌面端走 Notification 构造器（保持既有行为不变）；移动端走 service worker。
+     * 点击后聚焦页面并打开对应会话。
      *
-     * No `tag` on purpose: on Windows, Chrome replaces a still-listed
-     * notification with the same tag by updating it in place — the bubble
-     * never re-pops. A stale entry in the notification center therefore
-     * silently swallows every later notification with that tag. Without a
-     * tag every notice is a fresh bubble.
+     * 两条路径都刻意不带 `tag`：Windows 上 Chrome 对同 tag 通知只做静默更新、
+     * 不重新弹气泡，残留条目会吞掉后续所有同 tag 通知。
      */
     function sendSystemNotification(kind, title, detail, sessionId) {
       if (!shouldSendSystemNotification()) return
       if (systemPermission() !== 'granted') return
-      try {
-        const body = detail && detail !== '' ? detail : title
-        const notification = new window.Notification(title, {
-          body: truncate(body, 200),
-        })
-        notification.onclick = () => {
-          try {
-            window.focus()
-            if (
-              sessionId && ctxRef && ctxRef.sessions &&
-              typeof ctxRef.sessions.open === 'function'
-            ) {
-              ctxRef.sessions.open(sessionId)
-            }
-          } catch (error) { /* ignore */ }
-          try { notification.close() } catch (error) { /* ignore */ }
+      const body = truncate(detail && detail !== '' ? detail : title, 200)
+
+      const viaConstructor = () => {
+        try {
+          showViaConstructor(title, body, sessionId)
+        } catch (error) {
+          console.warn('[dsh-agent-notify] system notification failed:', error)
         }
-      } catch (error) {
-        console.warn('[dsh-agent-notify] system notification failed:', error)
       }
+
+      if (prefersServiceWorker() && serviceWorkerSupported()) {
+        showViaServiceWorker(title, body, sessionId)
+          .then((ok) => { if (!ok) viaConstructor() })
+          .catch((error) => {
+            console.warn('[dsh-agent-notify] service worker 通知失败，回退构造器:', error)
+            viaConstructor()
+          })
+        return
+      }
+      viaConstructor()
     }
 
     /**
      * Diagnostic: send a system notification regardless of the configured send
-     * mode (permission still applies). Returns a short result string so the
-     * settings page can show exactly what happened.
+     * mode (permission still applies).
+     *
+     * 返回 Promise<string>（service worker 路径是异步的），设置页据此显示结果。
      */
-    function sendTestNotification() {
+    async function sendTestNotification() {
       if (systemPermission() === 'denied') return '权限被拒绝：点地址栏 🔒 → 网站设置 → 通知 → 允许'
       if (systemPermission() === 'default') return '未授权：再点一次本按钮触发浏览器询问'
-      if (systemPermission() === 'unsupported') return '浏览器不支持系统通知（请用 Edge / Chrome）'
-      try {
-        const notification = new window.Notification('测试通知', {
-          body: '如果你看到这条消息，系统通知链路正常 ✓',
-        })
-        notification.onclick = () => {
-          try { window.focus() } catch (error) { /* ignore */ }
-          try { notification.close() } catch (error) { /* ignore */ }
+      if (systemPermission() === 'unsupported') {
+        return '本浏览器不提供 Notification API。若你是通过局域网地址访问，请改用 http://127.0.0.1:3080（通知 API 只在安全上下文可用）'
+      }
+
+      const title = '测试通知'
+      const body = '如果你看到这条消息，系统通知链路正常 ✓'
+      const mobile = prefersServiceWorker()
+
+      // 移动端：service worker 是唯一可行路径
+      if (mobile && serviceWorkerSupported()) {
+        try {
+          const ok = await showViaServiceWorker(title, body, null)
+          if (ok) return '已通过 service worker 发送 ✓（若未弹出，检查系统设置里的通知权限与勿扰/专注模式）'
+          return '发送失败：service worker 不可用（/plugins/dsh-agent-notify/sw.js 可能取不到）'
+        } catch (error) {
+          const raw = error && error.message ? error.message : String(error)
+          console.warn('[dsh-agent-notify] test notification via service worker failed:', error)
+          return 'service worker 发送失败：' + raw
         }
-        return '已发送 ✓（若未弹出，检查 Windows 通知设置与专注助手）'
+      }
+
+      // 桌面端：保持原有构造器路径
+      try {
+        showViaConstructor(title, body, null)
+        return '已发送 ✓（若未弹出，检查系统通知设置与勿扰/专注模式）'
       } catch (error) {
         console.warn('[dsh-agent-notify] test notification failed:', error)
         const raw = error && error.message ? error.message : String(error)
-        // 移动端浏览器的 Notification 构造器会抛 TypeError（Chrome for Android 等，
-        // 见 Chrome issue #481856，MDN 亦明确 "throws a TypeError when called in nearly
-        // all mobile browsers"）。移动端唯一可行路径是 service worker 的
-        // ServiceWorkerRegistration.showNotification()，而当前 dsh 前端并未注册
-        // service worker，所以这条替代路径也不存在。如实说明，避免用户误以为是权限问题。
         if (/illegal constructor|not supported|TypeError/i.test(raw)) {
-          return '发送失败：本浏览器不支持 Notification 构造器。移动端只能靠 service worker 的 showNotification() 发系统通知，而当前 dsh 没有注册 service worker —— 故在手机上无法发系统通知（与权限设置无关）。'
+          return '发送失败：本浏览器不支持 Notification 构造器（移动端浏览器普遍如此，见 Chrome #481856），'
+            + '且未能通过 service worker 发送 —— 请确认 /plugins/dsh-agent-notify/sw.js 可访问，'
+            + '并在站点设置里确认通知权限为「允许」'
         }
         return '发送失败：' + raw
       }
@@ -305,8 +401,12 @@ window.__ModuleLoader__.load({
           className: 'dan-card-btn',
           onClick: () => {
             const send = () => {
-              const result = sendTestNotification()
-              setState((prev) => ({ ...prev, lastTest: result }))
+              // service worker 路径是异步的，故用 Promise.resolve 兼容两种返回
+              Promise.resolve(sendTestNotification()).then((result) => {
+                setState((prev) => ({ ...prev, lastTest: result }))
+              }, (error) => {
+                setState((prev) => ({ ...prev, lastTest: '发送异常：' + String(error && error.message ? error.message : error) }))
+              })
             }
             if (systemPermission() === 'default') {
               requestSystemPermission().then(() => { refreshPerm(); send() })
@@ -473,14 +573,35 @@ window.__ModuleLoader__.load({
         }
         // Establish the baseline once services are ready.
         handleListChange()
+
+        // ---------------------------------------------------------- service worker
+        // 移动端发系统通知必须走 service worker，这里做两件事：
+        //   1) 提前注册并预热，使第一条通知不必等注册完成（注册本身不弹任何权限框）；
+        //   2) 监听 SW 转发的"通知被点击"消息 —— SW 通知的点击回调在 SW 里，
+        //      只能通过 postMessage 回到页面来打开对应会话。
+        if (serviceWorkerSupported()) {
+          ensureServiceWorker().catch(() => { /* 已在上层记录 */ })
+          try {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+              const data = event && event.data
+              if (!data || data.type !== 'dsh-agent-notify:click') return
+              try { window.focus() } catch (error) { /* ignore */ }
+              openSession(data.sessionId)
+            })
+          } catch (error) {
+            console.warn('[dsh-agent-notify] service worker message listener failed:', error)
+          }
+        }
+
         // Console diagnostic hook: `window.__agentNotify.test()` sends a test
-        // notification and returns the exact result string.
+        // notification and resolves with the exact result string.
         try {
           window.__agentNotify = {
             version: BUNDLE_VERSION,
             settings: () => Object.assign({}, settings),
             permission: () => systemPermission(),
             test: () => sendTestNotification(),
+            serviceWorker: () => (swRegistration ? 'ready' : 'not-registered'),
           }
         } catch (error) {
           console.warn('[dsh-agent-notify] debug hook install failed:', error)
