@@ -123,6 +123,22 @@ bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token �
 - **`AbortSignal.any is not a function`**：浏览器过旧，`apply-frontend.sh` 已注入 polyfill。
 - **`crypto.randomUUID is not a function`**：局域网 HTTP 或旧版 WebView 不暴露该 API，`apply-frontend.sh` 已注入安全随机 UUID v4 回退。
 - **模型没反应**：检查 Models 页 API Key 与 `~/.dsh/.credentials.yaml`。
+- **点附件时选择器只有「相机 / 摄像机 / 照片和视频」，选不到 PDF/文档**：这是**设备侧**问题，不是 dsh 的。
+  dsh 的 composer 用的是 `type="file" multiple`（**没有 `accept`**，全树搜 `image/*` 只有文档预览包那一处），
+  所以应用层没有任何图片限制；`accept` 也改不动它（真机实测给通配、给文档类型都与不给完全一样）。
+  根因是**系统的文件选择器被 ROM 移除了**——本机 `pm list packages -u` 里能看到
+  `com.android.documentsui`，但它不在已安装/已启用列表里（国产 ROM 常见：卸掉 AOSP 文档选择器换成自家实现）。
+  于是 `am start -a android.intent.action.GET_CONTENT -t '*'` 直接报 `unable to resolve Intent`，
+  Chrome 的选择器自然只能列出相机与相册。
+
+  两条修法：
+  1. **装一个文件管理器**（最省事）：任何声明了 `GET_CONTENT`/`OPEN_DOCUMENT` 的文件管理器（如 Material Files、
+     Google「文件」）装上后就会出现在选择器里，"更多" 里随即有文件入口，此后 dsh 附件可任意类型。
+  2. **恢复系统自带的**：需要 adb（PC + USB 调试）执行 `adb shell pm install-existing com.android.documentsui`；
+     或到「设置 → 应用 → 显示系统应用」里找「文件 / Documents UI」看能否启用。
+
+  诊断结论均来自真机取证：`accept` 通配无效、⑤（`image/*`）行为不同说明 `accept` 确实生效但只是换不出文件管理器、
+  `GET_CONTENT` 无处理者、`documentsui` 只在 `-u` 列表里。
 - **换机/重装**：重跑 `bash setup.sh`。
 
 ### 七、作者测试环境与兼容性
@@ -236,6 +252,13 @@ The whitelist and default live in `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT`
 - **`AbortSignal.any is not a function`**: old browser; `apply-frontend.sh` injects a polyfill.
 - **`crypto.randomUUID is not a function`**: LAN HTTP and older WebViews may not expose the API; `apply-frontend.sh` injects a secure UUID v4 fallback.
 - **Model not responding**: check the API Key in Models page and `~/.dsh/.credentials.yaml`.
+- **The file chooser only offers “Camera / Camcorder / Photos & videos” — no PDF or documents**: this is a **device-side** problem, not dsh's. The composer uses `type="file" multiple` with **no `accept`** (the only `image/*` in the whole tree belongs to the document-preview package), so the app imposes no image restriction — and an `accept` cannot change it either: on-device tests showed that a wildcard accept, an accept listing document types, and no accept at all behave identically. The root cause is that the **system document picker has been removed by the ROM**: `pm list packages -u` reveals `com.android.documentsui`, yet it is absent from the installed/enabled lists (common on Chinese ROMs, which drop the AOSP picker for their own). Consequently `am start -a android.intent.action.GET_CONTENT -t '*'` fails with `unable to resolve Intent`, so Chrome's chooser can only list the camera and gallery apps.
+
+  Two fixes:
+  1. **Install a file manager** (easiest): any file manager that declares `GET_CONTENT`/`OPEN_DOCUMENT` (e.g. Material Files, Google Files) will then appear in the chooser, a file entry shows up under “More”, and dsh attachments accept any type.
+  2. **Restore the built-in one**: needs adb (PC + USB debugging) — `adb shell pm install-existing com.android.documentsui`; or look for “Files / Documents UI” under Settings → Apps → show system apps and see whether it can be enabled.
+
+  All of the above was established on-device: the wildcard `accept` had no effect, test ⑤ (`image/*`) behaved differently (so `accept` does take effect, it just cannot summon a picker that isn't installed), `GET_CONTENT` has no resolver, and `documentsui` appears only in the `-u` listing.
 - **Reinstall / new device**: re-run `bash setup.sh`.
 
 ### 7. Author's test environment & compatibility
