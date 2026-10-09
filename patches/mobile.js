@@ -316,14 +316,17 @@ if (typeof AbortSignal !== "undefined" && !AbortSignal.any) {
 (function () {
   if (typeof navigator === "undefined" || !/Android/i.test(navigator.userAgent || "")) return;
 
-  /* 刻意用**最小、且已被真机验证**的一组类型。
-   * Android 根本不过滤类型（实测文档选择器里任意文件都能选），所以写多写少功能上没差别，
-   * 但**写错会翻车**：Chrome 只要在列表里看到一个"媒体类"扩展名，就退回媒体选择器。
-   * 踩过的坑：曾把 .ts 当作 TypeScript 源码加进来 —— Chrome 把它读作 MPEG-TS 视频（video/mp2t），
-   * 于是整组类型被判为媒体请求，选择器退回「摄像机 / 照片和视频」（真机 E/F 探针复现）。
-   * 因此 image / .mp4 / .mp3 / .wav / .mkv / .m4a / .webm / .ts … 一律不许出现在这里。
-   * 下面这组与真机探针 D 完全一致（已验证会弹出文档选择器，且多选正常）。 */
-  var DOC_ACCEPT = "application/pdf,.pdf,.zip,.txt,.docx";
+  /* 只需一个"非媒体"类型，Chrome 就会走文档选择器。规则出自 Chromium 源码
+   *   ui/android/java/src/org/chromium/ui/base/SelectFileDialog.java
+   *     isSupportedPhotoPickerTypes(): 只要有一个类型不以 image/ 或 video/ 开头就返回 false
+   *     → 不使用照片 / 媒体选择器，改用普通文件选择器。
+   * 注意扩展名会先经 MimeTypeMap 转成 MIME，所以**绝不能出现会被映射成 image/video 的扩展名**。
+   *   踩过的坑：曾把 .ts（想覆盖 TypeScript 源码）加进列表 —— MimeTypeMap 把 .ts 映射为
+   *   video/mp2t，整组因此被判成媒体请求，选择器退回「摄像机 / 照片和视频」（真机探针 E/F 复现）。
+   *   同理禁止：任何 image 类型，以及 .mp4 / .mp3 / .wav / .mkv / .m4a / .webm / .mov / .avi …
+   * application/* 是最短且已实测可用的写法：
+   *   真机探针 G(application 通配)=文档、H(application/pdf)=文档、I(全通配)=媒体，对照有效。 */
+  var DOC_ACCEPT = "application/*";
 
   function fix(el) {
     try {
