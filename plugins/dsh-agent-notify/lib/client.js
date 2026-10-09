@@ -210,7 +210,16 @@ window.__ModuleLoader__.load({
         return '已发送 ✓（若未弹出，检查 Windows 通知设置与专注助手）'
       } catch (error) {
         console.warn('[dsh-agent-notify] test notification failed:', error)
-        return '发送失败：' + (error && error.message ? error.message : String(error))
+        const raw = error && error.message ? error.message : String(error)
+        // 移动端浏览器的 Notification 构造器会抛 TypeError（Chrome for Android 等，
+        // 见 Chrome issue #481856，MDN 亦明确 "throws a TypeError when called in nearly
+        // all mobile browsers"）。移动端唯一可行路径是 service worker 的
+        // ServiceWorkerRegistration.showNotification()，而当前 dsh 前端并未注册
+        // service worker，所以这条替代路径也不存在。如实说明，避免用户误以为是权限问题。
+        if (/illegal constructor|not supported|TypeError/i.test(raw)) {
+          return '发送失败：本浏览器不支持 Notification 构造器。移动端只能靠 service worker 的 showNotification() 发系统通知，而当前 dsh 没有注册 service worker —— 故在手机上无法发系统通知（与权限设置无关）。'
+        }
+        return '发送失败：' + raw
       }
     }
 
@@ -429,18 +438,33 @@ window.__ModuleLoader__.load({
         const unsubscribe = sessions.list.subscribe(handleListChange)
         ctx.effect(() => unsubscribe, 'agent-notify: sessions list subscription')
         ctx.on('connection/reset', resetBaseline)
-        // Register a first-level settings page (Settings → 任务提示), the
-        // same mechanism the pet plugin uses for Settings → 宠物.
-        if (ctx.slots && typeof ctx.slots.register === 'function') {
+        // Register a first-level settings page (Settings → 任务提示)。
+        //
+        // ⚠️ 必须走 ctx.slots.inject 而不是直接 register：`settings.section` 是**惰性声明**的
+        // 插槽（由设置界面那个入口在挂载时声明），而 slots.register 对未声明的插槽会直接抛
+        //   slot "settings.section" is not declared (a parent entry's children table must declare it)
+        // 本插件在 apply 阶段就注册，那个入口尚未挂载 → 必然抛错 → 被下面 catch 吞掉 →
+        // **设置页永远不出现**（表现为"插件完全没反应"）。inject 会等到插槽声明后再执行回调。
+        // 该用法取自 dsh 自带文档 packages/client/ui-settings/src/client/contract/slots.ts:57。
+        const registerSettingsSection = () => {
+          ensureStyle()
+          return ctx.slots.register({
+            name: 'settings.section',
+            id: 'agent-notify',
+            order: 131,
+            label: () => '任务提示',
+          }, SettingsCard)
+        }
+        if (ctx.slots && typeof ctx.slots.inject === 'function') {
           try {
-            ensureStyle()
-            const unregister = ctx.slots.register({
-              name: 'settings.section',
-              id: 'agent-notify',
-              order: 131,
-              label: () => '任务提示',
-            }, SettingsCard)
-            ctx.effect(() => unregister, 'agent-notify: settings section')
+            ctx.slots.inject('settings.section', registerSettingsSection)
+          } catch (error) {
+            console.warn('[dsh-agent-notify] settings section injection failed:', error)
+          }
+        } else if (ctx.slots && typeof ctx.slots.register === 'function') {
+          // 回退：旧版 slots 服务没有 inject，只能立即注册（插槽已声明时才成功）
+          try {
+            ctx.effect(() => registerSettingsSection(), 'agent-notify: settings section')
           } catch (error) {
             console.warn('[dsh-agent-notify] settings section registration failed:', error)
           }

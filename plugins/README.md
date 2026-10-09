@@ -24,14 +24,60 @@ factory: (require) => {
 既不在平台 seed、也没有已注册 factory 时 `throw`）。这行位于 factory 顶部、在 `apply` 自身的
 `try/catch` **之前**，一旦抛出整个模块加载失败，插件完全不工作。
 
-本地改动（两处，见 `git log` / 与上游 diff）：
+本地改动（三处）：
 
 | 文件 | 改动 |
 |---|---|
 | `lib/client.js` | 把那句 require 包进 `try/catch`——旧架构仍生效，新架构不再炸 |
+| `lib/client.js` | **设置页注册改用 `ctx.slots.inject('settings.section', …)`**（详见下节） |
 | `package.json` | `dsh.client.inject` 由死包 `@deepseek-ai/dsh-client-runtime` 改为现代包：`@deepseek-ai/dsh-api-session-controller`（提供 `ctx.sessions`）、`@deepseek-ai/dsh-client-ui-slots`（提供 `ctx.slots`）、`@deepseek-ai/dsh-client-connection`（`connection/reset` 事件源） |
 
 `try/catch` 是向后兼容的，不影响旧架构上的行为。**若上游修好，应改用官方版本并删除本目录副本。**
+
+### 改动二：设置页注册必须走 `slots.inject`
+
+上游用的是裸注册：
+
+```js
+ctx.slots.register({ name: 'settings.section', id: 'agent-notify', … }, SettingsCard)
+```
+
+但 `settings.section` 是**惰性声明**的插槽——由设置界面那个入口在挂载时才声明。而
+`dsh-client-ui-slots` 的 `register()` 对未声明的插槽**直接抛错**：
+
+```js
+if (!rec?.spec) throw new Error(`slot "${options.name}" is not declared (a parent entry's children table must declare it)`);
+```
+
+插件在 `apply` 阶段就注册，那时入口尚未挂载 → 必然抛错 → 被自身 `catch` 吞掉 →
+**「设置 → 任务提示」永远不出现**，表现为「插件完全没反应」。
+
+正确写法（取自 dsh 自带文档 `packages/client/ui-settings/src/client/contract/slots.ts:57`）：
+
+```js
+ctx.slots.inject('settings.section', () => ctx.slots.register({ … }, SettingsCard))
+```
+
+`inject` 会等插槽声明后再执行回调。
+
+### ⚠️ 移动端（Android Chrome）无法发系统通知
+
+**这一条不是插件的 bug，是平台限制**，两个叠加的原因：
+
+1. **`new Notification()` 在移动端浏览器会抛 `TypeError`。** MDN 明确写道：
+   > This constructor throws a `TypeError` when called in nearly all mobile browsers. Instead, you need to register a service worker and use `ServiceWorkerRegistration.showNotification()`.
+   （见 [MDN: Notification() constructor](https://developer.mozilla.org/en-US/docs/Web/API/Notification/Notification)、[Chrome issue #481856](https://crbug.com/481856)）
+2. **替代路径也不存在**：`showNotification()` 需要 service worker，而 dsh 的前端**并未注册任何 service worker**
+   （`dsh-web-frontend/dist` 里 `serviceWorker` 出现 0 次）。
+
+所以在手机上点击「发送测试通知」会得到一条明确说明，而**不是**静默失败：
+
+> 发送失败：本浏览器不支持 Notification 构造器。移动端只能靠 service worker 的 showNotification()
+> 发系统通知，而当前 dsh 没有注册 service worker —— 故在手机上无法发系统通知（与权限设置无关）。
+
+即：**该插件的「系统级通知」能力实际上仅限桌面端 Chrome/Edge。** 想在 Android 上用，需要给 dsh
+补一个 service worker（可由插件的宿主半边注册 webServer 路由来提供，再用
+`registration.showNotification()` 发送）——那是一项独立改动，尚未实现。
 
 ### 安装（本地目录，pnpm `link:`）
 
