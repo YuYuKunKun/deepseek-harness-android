@@ -515,6 +515,48 @@ YAML
   ok "  权限模式已写入 $PROFILE_PATCH"
 fi
 
+# ---------------------------------------------------- 7.1 安装插件（可选）
+# 本项目 vendor 了 dsh-agent-notify（上游 npm 上的 1.0.0 在 dsh 0.1.5+ 上完全不可用，
+# 四处修复详见 plugins/README.md）。装到 ~/dsh/plugins/ 再以 link: 挂进 web profile ——
+# 拷出仓库目录是为了让插件不依赖仓库还在不在。
+#   · DSH_SKIP_PLUGINS=1 跳过；
+#   · 失败只告警，不中止安装（与 8/9 步同样的宽容策略）。
+if [ "${DSH_SKIP_PLUGINS:-0}" = "1" ]; then
+  info "7.1 跳过插件安装（DSH_SKIP_PLUGINS=1）"
+elif ! command -v dsh >/dev/null 2>&1; then
+  warn "  未找到 dsh 命令，跳过插件安装"
+elif [ ! -d "$SCRIPT_DIR/plugins/dsh-agent-notify" ]; then
+  warn "  缺少 plugins/dsh-agent-notify，跳过插件安装"
+else
+  info "7.1 安装插件 dsh-agent-notify"
+  PROFILE_DIR="$HOME/.dsh/profiles/web"
+  # ⚠️ 必须先让 dsh 自己初始化 profile：
+  # dsh 只在 package.json **不存在**时才写入默认 bundles（lib/plugin-*.js 的 initProfile 分支，
+  # web 模板 = dsh-base + dsh-web-app）。若让 pnpm 先建出 package.json，dsh 之后就再也不会补
+  # bundles，profile 会缺基础层。--dump-config 只组合配置、不启动服务。
+  if [ ! -f "$PROFILE_DIR/package.json" ]; then
+    dsh --profile web --dump-config >/dev/null 2>&1 || true
+  fi
+  mkdir -p "$INSTALL_DIR/plugins"
+  rm -rf "$INSTALL_DIR/plugins/dsh-agent-notify"
+  if cp -r "$SCRIPT_DIR/plugins/dsh-agent-notify" "$INSTALL_DIR/plugins/" 2>/dev/null; then
+    if (cd "$PROFILE_DIR" 2>/dev/null && dsh plugin --profile web add "link:$INSTALL_DIR/plugins/dsh-agent-notify" >/dev/null 2>&1); then
+      # 装完核对 profile 结构，避免"装上了但 profile 缺 bundles"这种隐性损坏
+      if grep -q '"bundles"' "$PROFILE_DIR/package.json" 2>/dev/null; then
+        ok "  已装入 web profile（下次启动 dsh 时生效）"
+      else
+        warn "  profile 的 package.json 里没有 dsh.profile.bundles —— 请先启动一次 dsh"
+        warn "    （bash ~/dsh/start_dsh.sh），再重跑本脚本补上插件"
+      fi
+    else
+      warn "  自动安装失败，可手动执行："
+      warn "    cd ~/.dsh/profiles/web && dsh plugin --profile web add \"link:$INSTALL_DIR/plugins/dsh-agent-notify\""
+    fi
+  else
+    warn "  拷贝插件到 $INSTALL_DIR/plugins/ 失败"
+  fi
+fi
+
 # ------------------------------------------------------- 8/10 前端适配(可选)
 # 8/9 步是可选增强：失败只告警，不能让整轮安装中止（否则连完成横幅都看不到）。
 if [ -f "$SCRIPT_DIR/apply-frontend.sh" ]; then

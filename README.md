@@ -82,6 +82,29 @@ bash ~/dsh/restart_dsh_now.sh                    # 重启，并打印带 token �
 
 白名单与默认版本定义在 `setup.sh` 顶部的 `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT` 两个变量里，新增验证通过的版本时改这一处即可（`apply-js-patches.sh` 的基线由 `setup.sh` 传入，不再各自硬编码）。
 
+#### 插件（`setup.sh` 第 7.1 步）
+
+`setup.sh` 会把仓库里 vendored 的 **`dsh-agent-notify`** 拷到 `~/dsh/plugins/`，再以 `link:` 挂进 web profile：
+
+```bash
+# 跳过插件安装
+DSH_SKIP_PLUGINS=1 bash setup.sh
+
+# 手动安装（脚本已经做过就不用）
+cd ~/.dsh/profiles/web
+dsh plugin --profile web add "link:$HOME/dsh/plugins/dsh-agent-notify"
+```
+
+它是「agent 完成任务 / 需要你输入时弹系统通知」的插件。之所以 vendored：**上游 npm 上的 1.0.0 在 dsh 0.1.5+ 上完全不可用**（死包 `require`、设置页注册方式过期、移动端缺通知路径、`pendingInteraction` 搬家），四处修复与依据见 [`plugins/README.md`](plugins/README.md)。
+
+`dsh-web-mobile`（移动端竖屏适配）**不由本仓库分发**——上游持续维护且已适配新架构，直接装官方版本：
+
+```bash
+dsh plugin --profile web add dsh-web-mobile
+```
+
+> 第 7.1 步会先确认 profile 已由 dsh 自己初始化（`dsh --profile web --dump-config`）。这一步不是多余的：dsh **只在 `package.json` 不存在时**才写入默认 bundles，若让 pnpm 抢先建出 `package.json`，profile 就永远缺 `dsh.profile.bundles` 这一层。装完脚本还会核对一次，缺失会明确告警而不是静默留下坏 profile。
+
 ### 四、setup.sh 自动修复的 Android 兼容问题
 
 | 问题 | 现象 | 修复 |
@@ -222,6 +245,29 @@ Precedence: `DSH_NPM` > `DSH_VERSION` > **installed version if it is on the veri
 - records everything in `~/dsh/INSTALL-INFO.txt` (setup.sh version, git revision, target spec, installed version, timestamp).
 
 The whitelist and default live in `DSH_VERSION_VERIFIED` / `DSH_VERSION_DEFAULT` at the top of `setup.sh` — add a newly verified version in that one place (`apply-js-patches.sh` receives the baseline from `setup.sh` instead of hardcoding its own).
+
+#### Plugins (`setup.sh` step 7.1)
+
+`setup.sh` copies the vendored **`dsh-agent-notify`** into `~/dsh/plugins/` and links it into the web profile:
+
+```bash
+# skip plugin installation
+DSH_SKIP_PLUGINS=1 bash setup.sh
+
+# manual install (unnecessary once the script has done it)
+cd ~/.dsh/profiles/web
+dsh plugin --profile web add "link:$HOME/dsh/plugins/dsh-agent-notify"
+```
+
+It is the plugin that fires a system notification when the agent finishes a task or needs your input. It is vendored because **the published 1.0.0 is completely unusable on dsh 0.1.5+** (dead-package `require`, outdated settings-page registration, no mobile notification path, `pendingInteraction` moved) — all four fixes and the evidence are in [`plugins/README.md`](plugins/README.md).
+
+`dsh-web-mobile` (portrait/mobile adaptation) is **not distributed here** — upstream actively maintains it and it already supports the new architecture, so install the official build:
+
+```bash
+dsh plugin --profile web add dsh-web-mobile
+```
+
+> Step 7.1 first makes sure the profile has been initialized by dsh itself (`dsh --profile web --dump-config`). That is not redundant: dsh writes the default bundles **only when `package.json` does not exist**, so if pnpm creates `package.json` first the profile will forever lack the `dsh.profile.bundles` layer. The step re-checks afterwards and warns loudly instead of silently leaving a broken profile.
 
 ### 4. Android issues auto-fixed by setup.sh
 
