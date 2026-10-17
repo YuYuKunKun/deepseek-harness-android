@@ -38,7 +38,7 @@ INSTALL_DIR="$HOME/dsh"
 # 所以这里锁定一个已验证版本，并把"验证过的版本"列成白名单显式核对。
 SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
 DSH_VERSION_DEFAULT="0.1.5-rc.3"             # 默认安装（无需 shim、最保守的已验证版本）
-DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2" # 补丁集已实测通过的版本
+DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2 0.2.1-rc.2" # 补丁集已实测通过的版本
 # 已知在 Android/Termux 上跑不起来的版本（"补丁能打" ≠ "能跑"）：
 #
 #   0.1.5-rc.1 / 0.1.5-rc.2 —— cordis 回归：@deepseek-ai/cordis 于 2026-09-22 发布
@@ -49,7 +49,15 @@ DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2" # 补丁集�
 #   0.1.7 及以后的版本线新增了原生插件 node-addon-require-builtin（由 dsh-app-boot 的
 #       internalModules() 裸 require，属启动必经路径），它没有 android 预编译、也无法
 #       自行编译 —— 但第 3.2 步会自动放入 JS 替代实现，所以这些版本不算"不可用"。
-#       其中 0.2.0-rc.2 已实测通过（启动 <5s、认证 200、5 个补丁全部落地）。
+#       0.2.0-rc.2 与 0.2.1-rc.2 均已在真机实测通过（补丁全落、启动正常、认证 200、
+#       插件宿主半边加载）。
+#
+#   ⚠️ 那个 JS 替代实现会随上游 loader 的校验一起漂移：node-addon-native-custom-loader
+#      0.1.9 新增了 product 校验（必须等于 'require-builtin'），0.1.6 没有。若将来 dsh
+#      升级后又报 "No usable native binding …" 或 "native binding … mismatch"，第一件事
+#      是查 loader 版本与它新增的校验项，而不是怀疑手机环境。
+#
+#   0.2.1 线的 cordis 声明统一为 `~4.0.5`（子包不再精确钉版本），所以不会有嵌套树问题。
 DSH_VERSION_UNUSABLE="0.1.5-rc.1 0.1.5-rc.2"
 
 is_verified_version() { [[ " $DSH_VERSION_VERIFIED " == *" $1 "* ]]; }
