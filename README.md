@@ -171,7 +171,16 @@ dsh plugin --profile web add dsh-web-mobile
 
 ### 七、作者测试环境与兼容性
 
-- **测试设备**：华为 Mate 60（ALN-AL80），HarmonyOS 4.2.0（build 4.2.0.186），**无 root**，Termux（Node v26，aarch64）。
+- **测试设备**：
+
+  | 机型 | 系统 | dsh | 说明 |
+  |---|---|---|---|
+  | OnePlus PJZ110 | Android 16 (API 36) | 0.2.1-rc.2 | 主测机 |
+  | ZTE NX701J | Android 14 (API 34) | 0.2.0-rc.2 | 验证过 0.1.5-rc.3 → 0.2.0-rc.2 升级 |
+  | — (PDBM00) | **Android 9 (API 28)** | 0.2.1-rc.2 | 验证过全新安装；需第 4g 步的 koffi 修复 |
+
+- 全部设备均**无 root**，Termux（Node v26，aarch64）。
+- **Android 9 及更早**（API < 30）需要注意 koffi：它的 `statx()` 是 API 30 才有的，用 `android30` 编出的 `.node` 在这类设备上一加载就段错误，表现为「dsh 能启动但一执行命令就失败」。`setup.sh` 第 4g 步会自动改用 `fstatat` 分支并按设备 SDK 重编，无需手工干预。
 - 不同手机 / ROM 的差异可能导致额外问题，例如：部分 ROM 通过 SELinux 禁用 `link()` 系统调用（会话持久化已改用 `rename()` 修复；**附件路径见上表「已知问题」**）、命名空间沙箱权限不同、bwrap/landlock 是否可用等。
 - `setup.sh` 覆盖了通用 Android 场景，但个别机型可能需要额外适配。
 
@@ -321,7 +330,16 @@ dsh plugin --profile web add dsh-web-mobile
 
 ### 7. Author's test environment & compatibility
 
-- **Tested device**: Huawei Mate 60 (ALN-AL80), HarmonyOS 4.2.0 (build 4.2.0.186), **no root**, Termux (Node v26, aarch64).
+- **Tested devices**:
+
+  | Device | OS | dsh | Notes |
+  |---|---|---|---|
+  | OnePlus PJZ110 | Android 16 (API 36) | 0.2.1-rc.2 | primary test device |
+  | ZTE NX701J | Android 14 (API 34) | 0.2.0-rc.2 | verified the 0.1.5-rc.3 → 0.2.0-rc.2 upgrade |
+  | — (PDBM00) | **Android 9 (API 28)** | 0.2.1-rc.2 | verified a clean install; needs the step 4g koffi fix |
+
+- All devices are **unrooted**, running Termux (Node v26, aarch64).
+- **Android 9 and older** (API < 30) need care around koffi: it calls `statx()`, which only exists from bionic API 30, so a `.node` built with `android30` segfaults on load there — the symptom is "dsh starts fine but every command fails". Step 4g of `setup.sh` switches to the `fstatat` branch and rebuilds against the device's own SDK automatically.
 - Different phones / ROMs may behave differently, e.g. some ROMs block the `link()` syscall via SELinux (session persistence is fixed by switching to `rename()`; **see the "Known issue" row above for attachments**), namespace-sandbox permissions vary, and bwrap/landlock may or may not be available.
 - `setup.sh` covers the common Android cases, but specific devices may need extra tweaks.
 

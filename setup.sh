@@ -462,6 +462,71 @@ print("  patched node-addon-system flock (android → 单进程语义)")
 PY
 fi
 
+# ------------------------------------------------ 4g 旧 Android 上的 koffi 段错误
+#   症状：dsh 能启动、Web UI 正常，但**一执行命令就失败**（runner 子进程 SIGSEGV，
+#         退出码 139）。koffi 是懒加载的，所以启动阶段看不出来。
+#   原因：koffi 的 StatAt() 在 __linux__ 分支调用 statx()，而 statx 是 bionic **API 30**
+#         才引入的。在 Android 9 (API 28) 上：
+#           · 用 -target aarch64-linux-android30 编出来的 .node，一 dlopen 就 SIGSEGV；
+#           · 改用 -target ...-android28 又**编不过**（statx 未声明，
+#             报 "cannot initialize a member subobject of type '__u32'"）。
+#   处理：koffi 对非 Linux 平台本来就有 fstatat/fstat 实现（base.cc 里 StatAt 的 #else
+#         分支），而这两个调用在 API 21+ 都可用。于是让 Android 也走那条分支，再用
+#         **设备自己的** SDK 级别重编。实测 Android 9 上 koffi 可正常工作
+#         （loadLinuxExecve 可用、libc.getpid() 返回值正确）。
+#   仅当设备 SDK < 30 时执行；幂等（先用 node 真加载一次判断，崩了才重编）；失败只告警。
+KOFFI_DIR="$DSH_DIR/node_modules/koffi"
+KOFFI_SDK="$(getprop ro.build.version.sdk 2>/dev/null || echo 30)"
+if [ -d "$KOFFI_DIR" ] && [ "${KOFFI_SDK:-30}" -lt 30 ] 2>/dev/null; then
+  info "4g 旧 Android (API ${KOFFI_SDK}) 的 koffi 修复（statx 需 API 30）"
+  KOFFI_CC="$KOFFI_DIR/lib/native/base/base.cc"
+  KOFFI_MARK="$KOFFI_DIR/.dsh-android-rebuilt"
+  # 判据不靠时间戳也不靠标记，而是**真的 require 一次**：段错误只会杀掉那个子进程。
+  koffi_loads() { node -e 'require(process.argv[1])' "$KOFFI_DIR" >/dev/null 2>&1; }
+  if [ -f "$KOFFI_CC" ]; then
+    if grep -q '!defined(__ANDROID__)' "$KOFFI_CC" 2>/dev/null; then
+      ok "  koffi 源码已修补（Android 走 fstatat 分支）"
+    else
+      cp "$KOFFI_CC" "$KOFFI_CC.bak-dsh" 2>/dev/null
+      python3 - "$KOFFI_CC" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+anchor = ("static StatResult StatAt(int fd, bool fd_is_directory, const char *filename, "
+          "unsigned int flags, FileInfo *out_info)\n{\n#if defined(__linux__)")
+if s.count(anchor) != 1:
+    print(f"  WARN: StatAt 锚点命中 {s.count(anchor)} 处，跳过 koffi 源码修补")
+    sys.exit(0)
+open(p, 'w', encoding='utf-8').write(
+    s.replace(anchor, anchor.replace("#if defined(__linux__)",
+                                     "#if defined(__linux__) && !defined(__ANDROID__)")))
+print("  patched koffi base.cc (Android → fstatat 分支)")
+PY
+    fi
+    if [ -f "$KOFFI_MARK" ] && koffi_loads; then
+      ok "  koffi 已可在本机加载，跳过重编"
+    else
+      info "  用 API ${KOFFI_SDK} 重编 koffi（约 2~5 分钟）"
+      if ( cd "$KOFFI_DIR" && rm -rf build \
+           && CFLAGS="-target aarch64-linux-android${KOFFI_SDK} -I$PREFIX/include" \
+              CXXFLAGS="-target aarch64-linux-android${KOFFI_SDK} -I$PREFIX/include" \
+              LDFLAGS="-target aarch64-linux-android${KOFFI_SDK}" \
+              npm run install >"$HOME/koffi-build-${KOFFI_SDK}.log" 2>&1 ); then
+        if koffi_loads; then
+          touch "$KOFFI_MARK"
+          ok "  koffi 重编完成且可加载"
+        else
+          warn "  koffi 重编完成但**仍无法加载**；执行命令会失败，详见 ~/koffi-build-${KOFFI_SDK}.log"
+        fi
+      else
+        warn "  koffi 重编失败（详见 ~/koffi-build-${KOFFI_SDK}.log）；执行命令会失败"
+      fi
+    fi
+  else
+    warn "  未找到 $KOFFI_CC，跳过 koffi 修复"
+  fi
+fi
+
 # ------------------------------------------------------ 5/10 sharp wasm 回退
 info "5/10 安装 sharp WebAssembly 回退（android-arm64 无原生预编译）"
 SHARP_VER="$(node -e "console.log(require('$DSH_DIR/node_modules/sharp/package.json').version)" 2>/dev/null || echo 0.35.3)"
