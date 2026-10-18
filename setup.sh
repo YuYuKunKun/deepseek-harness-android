@@ -231,7 +231,14 @@ fi
 if node -e 'require(process.argv[1])' "$DSH_DIR/node_modules/koffi" >/dev/null 2>&1; then
   ok "koffi 原生模块就位（加载自检通过）"
 else
-  warn "  koffi 加载自检失败（dsh-subprocess-local / fs-local 等将无法加载）"
+  KSDK_NOW="$(getprop ro.build.version.sdk 2>/dev/null || echo 30)"
+  if [ "${KSDK_NOW:-30}" -lt 30 ] 2>/dev/null; then
+    # 旧 Android 上这是**预期内的中间状态**：koffi 的 statx 需要 API 30，第 4g 步会改用
+    # fstatat 分支并按设备 SDK 重编。别让它看起来像最终失败。
+    info "  koffi 暂不可用 —— 预期内：本机 Android API ${KSDK_NOW} < 30，第 4g 步将自动重编修复"
+  else
+    warn "  koffi 加载自检失败（dsh-subprocess-local / fs-local 等将无法加载）"
+  fi
 fi
 
 # ------------------------------------------------- 3.1 安装后版本核对
