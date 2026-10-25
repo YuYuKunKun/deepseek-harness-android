@@ -38,7 +38,7 @@ INSTALL_DIR="$HOME/dsh"
 # 所以这里锁定一个已验证版本，并把"验证过的版本"列成白名单显式核对。
 SETUP_VERSION="1.1.0"                        # 本脚本自身版本（语义变化时递增）
 DSH_VERSION_DEFAULT="0.1.5-rc.3"             # 默认安装（无需 shim、最保守的已验证版本）
-DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2 0.2.1-rc.2" # 补丁集已实测通过的版本
+DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2 0.2.1-rc.2 0.2.1-rc.3" # 补丁集已实测通过的版本
 # 已知在 Android/Termux 上跑不起来的版本（"补丁能打" ≠ "能跑"）：
 #
 #   0.1.5-rc.1 / 0.1.5-rc.2 —— cordis 回归：@deepseek-ai/cordis 于 2026-09-22 发布
@@ -49,8 +49,8 @@ DSH_VERSION_VERIFIED="0.1.5-rc.1 0.1.5-rc.2 0.1.5-rc.3 0.2.0-rc.2 0.2.1-rc.2" # 
 #   0.1.7 及以后的版本线新增了原生插件 node-addon-require-builtin（由 dsh-app-boot 的
 #       internalModules() 裸 require，属启动必经路径），它没有 android 预编译、也无法
 #       自行编译 —— 但第 3.2 步会自动放入 JS 替代实现，所以这些版本不算"不可用"。
-#       0.2.0-rc.2 与 0.2.1-rc.2 均已在真机实测通过（补丁全落、启动正常、认证 200、
-#       插件宿主半边加载）。
+#       0.2.0-rc.2 / 0.2.1-rc.2 / 0.2.1-rc.3 均已在真机实测通过（补丁全落、启动正常、
+#       认证 200、插件宿主半边加载）。0.2.1-rc.3 在 Android 9 / 14 / 16 三档系统上各验一台。
 #
 #   ⚠️ 那个 JS 替代实现会随上游 loader 的校验一起漂移：node-addon-native-custom-loader
 #      0.1.9 新增了 product 校验（必须等于 'require-builtin'），0.1.6 没有。若将来 dsh
@@ -117,9 +117,29 @@ if [ -n "$DSH_REQUESTED_VERSION" ] && is_unusable_version "$DSH_REQUESTED_VERSIO
 fi
 
 # ---------------------------------------------------------------- 1/10 依赖
-info "1/10 安装构建依赖 (cmake clang make binutils pkg-config python nodejs)"
-pkg update -y >/dev/null 2>&1 || true
-pkg install -y cmake clang make binutils pkg-config python nodejs
+info "1/10 检查构建依赖 (cmake clang make binutils pkg-config python nodejs)"
+# 镜像偶发 429（Too Many Requests）时 pkg install 会**硬失败**并中止整轮安装。
+# 而"重跑安装"的场景里依赖本来就已经齐了，没必要再打一次镜像。两个改进：
+#   1) 依赖齐全 + 之前装过（有 INSTALL-INFO.txt）→ 直接跳过；
+#   2) 真需要装时，失败重试一次再放弃。
+DEPS_MISSING=""
+for c in cmake clang make ar pkg-config python3 node; do
+  command -v "$c" >/dev/null 2>&1 || DEPS_MISSING="$DEPS_MISSING $c"
+done
+if [ -z "$DEPS_MISSING" ] && [ -f "$INSTALL_DIR/INSTALL-INFO.txt" ]; then
+  ok "  构建依赖已就绪，跳过 pkg install"
+else
+  [ -n "$DEPS_MISSING" ] && info "  缺少:${DEPS_MISSING}"
+  pkg update -y >/dev/null 2>&1 || true
+  if ! pkg install -y cmake clang make binutils pkg-config python nodejs; then
+    warn "  pkg install 失败（常见原因：Termux 镜像 429 限流 / 网络抖动）"
+    warn "  10 秒后重试一次..."
+    sleep 10
+    pkg update -y >/dev/null 2>&1 || true
+    pkg install -y cmake clang make binutils pkg-config python nodejs \
+      || warn "  重试仍失败；请手动执行 pkg install cmake clang make binutils pkg-config python nodejs，再重跑本脚本"
+  fi
+fi
 
 command -v node >/dev/null 2>&1 || { warn "node 未安装，重试安装 nodejs..."; pkg install -y nodejs; }
 NODE_VER="$(node -v | sed 's/^v//')"
