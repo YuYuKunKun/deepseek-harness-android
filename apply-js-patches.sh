@@ -37,7 +37,24 @@ case " ${DSH_PATCH_BASELINE} " in
   *) [ -n "$DSH_VER" ] && echo "  [warn] dsh ${DSH_VER} 不在已验证列表内——补丁若失配，可用 DSH_VERSION=<已验证版本> 重跑 setup.sh" ;;
 esac
 
-applied=0; skipped=0; failed=0
+applied=0; skipped=0; failed=0; retired=0
+# 有些补丁会因**上游自行实现**而无法应用——这不是"失配"，该报成"已退役"而不是 FAIL。
+#   04-frontend-static-cache：
+#     0.2.1 及以前，dsh-host-frontend-static 只用 res.writeHead() 发内容、不发缓存头，
+#       所以 /assets/ 下的内容哈希产物每次整页重载都要重新下载（~4.7MB）。
+#     0.2.2 起该文件被整体重写成 Web `Response` API，并为**所有**非 index 文件统一发
+#       "cache-control: no-cache" + weak ETag，命中 If-None-Match 直接回 304。
+#       语义上已达成"不重复下载"，只差 immutable 的"连请求都不发"，故本补丁不再需要。
+#   判据用 "if-none-match"：0.2.1-rc.5 里 0 处，0.2.2-rc.1 里 1 处，是干净的版本分界。
+upstream_implements() {
+  case "$1" in
+    04-frontend-static-cache)
+      local f="$DSH_PACKAGES_DIR/dsh-host-frontend-static/lib/index.js"
+      [ -f "$f" ] && grep -q "if-none-match" "$f" 2>/dev/null
+      ;;
+    *) return 1 ;;
+  esac
+}
 for name in "${PATCHES[@]}"; do
   p="$HERE/patches/$name.patch"
   [ -f "$p" ] || { echo "  [FAIL] 缺少补丁文件 $p"; failed=$((failed+1)); continue; }
@@ -52,6 +69,10 @@ for name in "${PATCHES[@]}"; do
       echo "  [FAIL] $name 应用失败"
       failed=$((failed+1))
     fi
+  elif upstream_implements "$name"; then
+    # 上游换了实现且已覆盖本补丁的目的——有意跳过，不计失败。
+    echo "  [retire] $name 已由上游实现，无需本补丁（有意跳过）"
+    retired=$((retired+1))
   else
     echo "  [FAIL] $name 无法应用（dsh ${DSH_VER:-?} 与补丁基线不匹配？）"
     echo "         排查：在目标包内搜索补丁引入的唯一标记（如 IMMUTABLE_CACHE），"
@@ -62,5 +83,5 @@ done
 
 [ -d "$HERE/patches/obsolete" ] && echo "  [note] patches/obsolete/ 下的补丁已作废（上游已实现或架构重写），有意跳过；详见该目录 README.md"
 
-echo "[apply-js-patches] 完成：应用 $applied，跳过 $skipped，失败 $failed"
+echo "[apply-js-patches] 完成：应用 $applied，跳过 $skipped，已退役 $retired，失败 $failed"
 [ "$failed" -eq 0 ]

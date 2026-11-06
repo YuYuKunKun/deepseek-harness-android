@@ -150,6 +150,30 @@ const FALLBACK_BLOCK_OLD = [
 	"\t\t}",
 ].join("\n");
 
+/**
+ * 0.2.2 起的第二形态：`writeFileAtomic` 的签名从位置参数改成 options 对象，
+ * `createIfAbsent` 变成 `options.createIfAbsent`，displayPath 也提前算好了。
+ * 语义完全不变，只是这两处标识符变了，所以单独留一组锚点。
+ * 实测：dsh-fs-local@0.2.2-rc.1 第 579 行。
+ */
+const FALLBACK_BLOCK_OLD_V2 = [
+	"\t\tif (options.createIfAbsent) try {",
+	"\t\t\tawait linkFile(tempPath, absolutePath);",
+	"\t\t} catch (error) {",
+	"\t\t\tawait throwGuardedCreateFailure(error, absolutePath, displayPath, inspectPublicationTarget);",
+	"\t\t}",
+].join("\n");
+
+const FALLBACK_BLOCK_NEW_V2 = [
+	"\t\tif (options.createIfAbsent) try {",
+	"\t\t\tawait linkFile(tempPath, absolutePath);",
+	"\t\t} catch (error) {",
+	"\t\t\t/* [dsh-android-link-fix] 拒绝 link(2) 的文件系统（Android SELinux、部分 FUSE）回退到无硬链接的 no-replace 发布。 */",
+	"\t\t\tif (isHardLinkUnavailable(error)) await publishNoReplaceNoHardlink(tempPath, absolutePath, displayPath);",
+	"\t\t\telse await throwGuardedCreateFailure(error, absolutePath, displayPath, inspectPublicationTarget);",
+	"\t\t}",
+].join("\n");
+
 /** 附件祖先遍历：容忍内核拒绝打开的祖先目录（Android SELinux 禁止 app open 应用前缀之上的系统目录）。 */
 const WALK_HELPERS = [
 	"/**",
@@ -245,12 +269,22 @@ const PACKAGES = [
 		file: "lib/index.js",
 		fix(src) {
 			if (src.includes("publishNoReplaceNoHardlink")) return { status: "already-fixed", detail: "已包含无硬链接发布回退（此前已修补）" };
-			if (!src.includes(FALLBACK_BLOCK_OLD)) return { status: "pattern-mismatch", detail: "未找到 createIfAbsent 发布块，跳过，请人工检查该文件" };
-			let out = src.replace(FALLBACK_BLOCK_OLD, FALLBACK_BLOCK_NEW);
+			// 0.1.x–0.2.1 与 0.2.2+ 两种写法；语义相同，只是取 displayPath 的写法变了。
+			let out = null;
+			let shape = "";
+			if (src.includes(FALLBACK_BLOCK_OLD)) {
+				out = src.replace(FALLBACK_BLOCK_OLD, FALLBACK_BLOCK_NEW);
+				shape = "旧形态（createIfAbsent 参数）";
+			} else if (src.includes(FALLBACK_BLOCK_OLD_V2)) {
+				out = src.replace(FALLBACK_BLOCK_OLD_V2, FALLBACK_BLOCK_NEW_V2);
+				shape = "新形态（options.createIfAbsent）";
+			} else {
+				return { status: "pattern-mismatch", detail: "未找到 createIfAbsent 发布块（新旧两种形态都不匹配），跳过，请人工检查该文件" };
+			}
 			const anchor = "async function writeFileAtomic(";
 			if (!out.includes(anchor)) return { status: "pattern-mismatch", detail: "未找到 writeFileAtomic 插入锚点，跳过，请人工检查该文件" };
 			out = out.replace(anchor, FALLBACK_HELPERS + "\n\n" + anchor);
-			return { status: "patched", detail: "write 工具新建文件路径：link 失败时回退到无硬链接 no-replace 发布", src: out };
+			return { status: "patched", detail: `write 工具新建文件路径：link 失败时回退到无硬链接 no-replace 发布（${shape}）`, src: out };
 		},
 	},
 ];
